@@ -7,6 +7,7 @@ the pinned module functions and serialise; no data logic lives here.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -64,9 +65,34 @@ def create_app(config: ViewerConfig) -> FastAPI:
     app.state.registry = registry
 
     # -- helpers -------------------------------------------------------------
+    scan_lock = threading.Lock()
+
+    def _scan(reason: str) -> None:
+        t0 = time.perf_counter()
+        catalog.scan()
+        log.info("catalog scan (%s): %d files in %.2fs", reason, len(catalog.entries()), time.perf_counter() - t0)
+
+    def _ensure_scanned() -> bool:
+        """Run the first scan on demand. A page kept open across a server
+        restart asks for file ids before it ever fetches the catalog again;
+        without this every such request fails with 'unknown file id'.
+        Returns True when it scanned."""
+        if catalog.scanned_at is not None:
+            return False
+        with scan_lock:
+            if catalog.scanned_at is not None:
+                return False
+            _scan("first request")
+            return True
+
     def _handle(file_id: str) -> DatasetHandle:
         try:
-            return registry.get(file_id)
+            try:
+                return registry.get(file_id)
+            except KeyError:
+                if not _ensure_scanned():
+                    raise
+                return registry.get(file_id)
         except KeyError:
             raise HTTPException(404, f"unknown file id {file_id!r}; refresh the catalog or use /api/open")
         except FileNotFoundError as exc:
@@ -104,10 +130,11 @@ def create_app(config: ViewerConfig) -> FastAPI:
 
     @app.get("/api/catalog")
     def api_catalog(refresh: int = 0):
-        if refresh or catalog.scanned_at is None:
-            t0 = time.perf_counter()
-            catalog.scan()
-            log.info("catalog scan: %d files in %.2fs", len(catalog.entries()), time.perf_counter() - t0)
+        if refresh:
+            with scan_lock:
+                _scan("refresh")
+        else:
+            _ensure_scanned()
         return {
             "scanned_at": catalog.scanned_at,
             "roots": catalog.roots_summary(),

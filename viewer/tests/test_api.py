@@ -267,3 +267,39 @@ def test_render_subwindow_alignment(client, dsf):
     a = np.asarray(_png(resp))
     assert a[..., 3].min() == 255
     assert np.all(a == a[0, 0])
+
+
+# -- a request before any catalog fetch ----------------------------------------
+
+def test_file_requests_scan_the_catalog_on_demand(viewer_config, dsfopt_path):
+    """A page kept open across a server restart asks for file ids before it
+    fetches the catalog again: the first such request runs the scan instead
+    of answering 'unknown file id'."""
+    from fastapi.testclient import TestClient
+    from viewer.server.app import create_app
+    from viewer.server.catalog import file_id
+
+    app = create_app(viewer_config)
+    catalog = app.state.catalog
+    scans = []
+    orig_scan = catalog.scan
+
+    def counted_scan():
+        scans.append(1)
+        orig_scan()
+
+    catalog.scan = counted_scan
+    with TestClient(app) as c:
+        assert catalog.scanned_at is None
+        r = c.get(f"/api/files/{file_id(dsfopt_path)}/bands")
+        assert r.status_code == 200, r.text
+        assert catalog.scanned_at is not None and len(scans) == 1
+        # a genuinely unknown id still fails and does not rescan
+        r = c.get("/api/files/000000000000/bands")
+        assert r.status_code == 404 and "unknown file id" in r.json()["detail"]
+        assert len(scans) == 1
+        # the catalog endpoint reuses that scan; refresh=1 scans again
+        assert c.get("/api/catalog").json()["scanned_at"] == catalog.scanned_at
+        assert len(scans) == 1
+        assert c.get("/api/catalog", params={"refresh": 1}).status_code == 200
+        assert len(scans) == 2
