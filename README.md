@@ -210,7 +210,7 @@ python -m pytest -q
 node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs
 ```
 
-The Python suite (52 tests) writes small synthetic products to a temporary
+The Python suite (53 tests) writes small synthetic products to a temporary
 directory and needs no data. Two tests skip unless their extras are
 present: set `VIEWER_REAL_NC=<path to a product>` to run the real-file
 check, and install `matplotlib` to run the colormap regeneration check
