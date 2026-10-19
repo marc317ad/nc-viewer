@@ -12,12 +12,29 @@ export class ApiError extends Error {
 }
 
 async function detailOf(resp) {
+  let detail = null;
   try {
     const j = await resp.json();
-    if (j && typeof j.detail === "string") return j.detail;
-    if (j && j.detail) return JSON.stringify(j.detail);
+    if (j && typeof j.detail === "string") detail = j.detail;
+    else if (j && j.detail) detail = JSON.stringify(j.detail);
   } catch { /* not JSON */ }
-  return `${resp.status} ${resp.statusText || "error"}`;
+  return describeFailure(resp.status, detail, resp.url, resp.statusText);
+}
+
+/**
+ * Message for a failed response: the server's detail text when it sent one.
+ * A bare 404 "Not Found" is FastAPI's answer for a route that does not exist,
+ * i.e. the running server predates this page (the code changed while it ran);
+ * say so, because the status bar is the only place the user will see it.
+ */
+export function describeFailure(status, detail, url, statusText = "") {
+  if (status === 404 && detail === "Not Found") {
+    let route = url || "";
+    try { route = new URL(url, "http://localhost").pathname; } catch { /* keep the url */ }
+    return `the server has no ${route} route: it is older than this page, restart the viewer`;
+  }
+  if (detail) return detail;
+  return `${status} ${statusText || "error"}`;
 }
 
 async function getJson(url, signal) {

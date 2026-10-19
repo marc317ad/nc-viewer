@@ -207,10 +207,10 @@ the hash.
 
 ```
 python -m pytest -q
-node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs
+node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs viewer/tests/test_api.mjs
 ```
 
-The Python suite (53 tests) writes small synthetic products to a temporary
+The Python suite (54 tests) writes small synthetic products to a temporary
 directory and needs no data. Two tests skip unless their extras are
 present: set `VIEWER_REAL_NC=<path to a product>` to run the real-file
 check, and install `matplotlib` to run the colormap regeneration check
@@ -278,6 +278,9 @@ server's memory close to the band cache budget on large products.
   no 2-D variables; Level-1 radiance files and manifests are not supported.
 - *Blank pane after a band switch*: check the status bar for the server's
   error text; the previous image is kept.
+- *A button does nothing and the status bar says "the server has no ... route"*:
+  the running server is older than the page (the code changed while it ran).
+  Stop it, start it again from this folder, then reload the page.
 
 ## Documents
 
