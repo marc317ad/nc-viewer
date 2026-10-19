@@ -303,7 +303,7 @@ def test_sample_perf_smoke():
 # colormaps
 # --------------------------------------------------------------------------
 
-def test_colormaps_generated_and_required_names(tmp_path):
+def test_colormaps_generated_and_required_names():
     assert colormaps.COLORMAPS_JSON.exists()
     assert colormaps.COLORMAPS_JSON.stat().st_size < 60 * 1024
     assert b"\r" not in colormaps.COLORMAPS_JSON.read_bytes()
@@ -318,7 +318,10 @@ def test_colormaps_generated_and_required_names(tmp_path):
         assert colormaps.get_lut(name).shape == (256, 4)
     with pytest.raises(KeyError):
         colormaps.get_lut("not-a-map")
-    # regeneration is deterministic
+
+
+def test_colormaps_regeneration_is_deterministic(tmp_path):
+    pytest.importorskip("matplotlib")  # needed only to regenerate colormaps.json
     out = tmp_path / "cm.json"
     colormaps.generate_colormaps_json(out)
     assert out.read_bytes() == colormaps.COLORMAPS_JSON.read_bytes()

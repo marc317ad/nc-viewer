@@ -210,10 +210,12 @@ python -m pytest -q
 node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs
 ```
 
-The Python suite (51 tests) writes small synthetic products to a temporary
-directory and needs no data. Set `VIEWER_REAL_NC=<path to a product>` to
-also run the one real-file check. List the `.mjs` files explicitly: node's
-default test patterns do not match `test_*.mjs`.
+The Python suite (52 tests) writes small synthetic products to a temporary
+directory and needs no data. Two tests skip unless their extras are
+present: set `VIEWER_REAL_NC=<path to a product>` to run the real-file
+check, and install `matplotlib` to run the colormap regeneration check
+(the viewer itself never imports it). List the `.mjs` files explicitly:
+node's default test patterns do not match `test_*.mjs`.
 
 ## How it works
 
