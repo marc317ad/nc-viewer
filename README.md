@@ -10,8 +10,9 @@ It was written for Sentinel-2 water-quality products from ACOLITE (DSF) and
 SNAP C2RCC, which is where its band matching, flag decoding and catalog
 grouping come from, but any NetCDF file with 2-D variables opens.
 
-- Up to four panes with synchronised pan and zoom, in world coordinates for
-  projected grids or in pixel space for lat/lon-only files.
+- Up to four panes with synchronised pan and zoom in world coordinates;
+  files that only carry 2-D lat/lon (SNAP C2RCC output) are georeferenced
+  from them, so they line up with the projected products.
 - Band switching linked across products by nominal wavelength (`Rrs_B05`
   in one pane, `rrs_B5` in the other).
 - Auto or manual stretch, log scale, several colormaps, and a lock that
@@ -112,9 +113,14 @@ depends on what it carries:
   variable with `crs_wkt`, `spatial_ref` or an EPSG code. Panes showing
   files in the same CRS pan and zoom together in world coordinates, the
   status bar shows X/Y and lon/lat, and such files can be diffed.
-- **Lat/lon only**: 2-D `lat`/`lon` variables and no grid mapping. The
-  file is displayed in pixel space with its own view (an "unsynced: pixel
-  space" badge); lon/lat under the cursor still come from the arrays.
+- **Lat/lon only**: 2-D `lat`/`lon` variables and no grid mapping (SNAP
+  C2RCC output). A sample of the lat/lon is projected into the file's grid
+  mapping if it has one, the UTM zone of the scene and its neighbours, and
+  plain lon/lat; when it lies on a regular lattice in one of them (within
+  0.05 pixel) the grid is recovered and the file behaves like a projected
+  one in that CRS. Otherwise it is displayed in pixel space with its own
+  view (an "unsynced: pixel space" badge); lon/lat under the cursor still
+  come from the arrays.
 - **Flag words**: variables with `flag_masks` / `flag_meanings`, or a name
   ending in `_flags`. ACOLITE's `l2_flags` takes its bit names from the
   global `flag_exponent_*` attributes.
@@ -152,8 +158,9 @@ a mask), **RGB** (false-colour composite, below), diff select (`vs pane
 N`), close. The colorbar or legend sits under the image.
 
 **Topbar.** Layout 1-4, **Sync view** (panes in the same CRS share pan and
-zoom; pixel-space files get their own view and an "unsynced: pixel space"
-badge), **Link bands** (switching a band in one pane switches the others to
+zoom, raw C2RCC next to DSFOPT included; a file in another CRS or in pixel
+space gets its own view and an "unsynced" badge), **Link bands** (switching
+a band in one pane switches the others to
 the band with the same nominal wavelength, e.g. `Rrs_B05` <-> `rrs_B5`),
 **Lock stretch** (manual min/max applies to every pane showing the same
 band), **Fit**, **Refresh**, **Metadata** drawer, **?** shortcuts.
@@ -195,8 +202,8 @@ mode.
 
 **Keyboard.** `1`-`4` layout, `s` sync, `l` link bands, `k` lock stretch,
 `r` RGB composite, `c` catalog, `m` metadata, `F` fit all, `?` help; in a
-pane: drag to pan, wheel to zoom at the cursor, double-click zoom 2x,
-`+`/`-` zoom, `0` fit, arrows pan.
+pane: drag with the left or middle (wheel) button to pan, wheel to zoom at
+the cursor, double-click zoom 2x, `+`/`-` zoom, `0` fit, arrows pan.
 
 **URL hash.** The hash holds the layout, each pane's file and band (or
 `file:rgb(r,g,b)` for a composite) and the toggles, so a reload or a shared
@@ -210,7 +217,7 @@ python -m pytest -q
 node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs viewer/tests/test_api.mjs
 ```
 
-The Python suite (54 tests) writes small synthetic products to a temporary
+The Python suite (57 tests) writes small synthetic products to a temporary
 directory and needs no data. Two tests skip unless their extras are
 present: set `VIEWER_REAL_NC=<path to a product>` to run the real-file
 check, and install `matplotlib` to run the colormap regeneration check

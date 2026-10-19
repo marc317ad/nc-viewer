@@ -7,8 +7,12 @@ that mirror the shapes in plan section 2:
 - ``c2rccopt``:  same grid, pixel_status, rrs_B3/B4/B8A, conc_chl, c2rcc_flags,
                  aux_latitude/aux_longitude
 - ``l2w``:       like dsfopt but ACOLITE raw naming (Rrs_560 ...), plus 2-D lat/lon
-- ``c2rcc_raw``: no x/y, 2-D lat/lon coordinates, rrs_B3, conc_chl, c2rcc_flags
+- ``c2rcc_raw``: no x/y, 2-D lat/lon coordinates (standard_name set) plus SNAP's
+                 float32 aux_latitude/aux_longitude, rrs_B3, conc_chl, c2rcc_flags
 - ``canon``:     no coordinates at all, lat/lon as plain vars, Rrs_560, Rrs_865, c2rcc_flags
+
+The last two carry no grid mapping; their lat/lon lie on the same lattice
+as the others, which is what the viewer recovers the grid from.
 
 Grid: 20 m EPSG:32617 lattice, pixel centres starting at (583870, 2999990)
 (the T17RNK window), ``ny`` rows x ``nx`` cols.
@@ -260,10 +264,20 @@ def make_synthetic_product(path, kind: str = "dsfopt", ny: int = 60, nx: int = 8
             lon, lat = latlon_grid(ny, nx)
             vlat = ds.createVariable("lat", "f8", ("y", "x"))
             vlat.units = "degrees_north"
+            vlat.standard_name = "latitude"
             vlat[:] = lat
             vlon = ds.createVariable("lon", "f8", ("y", "x"))
             vlon.units = "degrees_east"
+            vlon.standard_name = "longitude"
             vlon[:] = lon
+            # SNAP also writes float32 aux_latitude/aux_longitude that are NOT the
+            # pixel coordinates (here a regular geographic lattice somewhere else);
+            # the viewer must georeference from lat/lon, never from these.
+            rr, cc = np.mgrid[0:ny, 0:nx].astype(np.float64)
+            _float_var(ds, "aux_latitude", (27.2 - 0.00018 * rr).astype(np.float32), units="degrees_north",
+                       long_name="", grid_mapping=False)
+            _float_var(ds, "aux_longitude", (-80.6 + 0.0002 * cc).astype(np.float32), units="degrees_east",
+                       long_name="", grid_mapping=False)
             _float_var(ds, "rrs_B3", masked(field_pattern(ny, nx, 13) * 0.8), units="sr^-1",
                        long_name="Atmospherically corrected Angular dependent remote sensing reflectances",
                        grid_mapping=False, coordinates="lat lon")

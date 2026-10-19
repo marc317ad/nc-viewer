@@ -108,7 +108,9 @@ def test_bands_info(client, dsf, c2r, raw):
     assert info2["grid"]["space"] == info["grid"]["space"]
 
     info3 = client.get(f"/api/files/{raw['id']}/bands").json()
-    assert info3["grid"]["kind"] == "pixel" and info3["grid"]["space"] == "pixel"
+    # lat/lon only: the grid is recovered from the arrays, same space as DSFOPT
+    assert info3["grid"]["kind"] == "projected" and info3["grid"]["space"] == info["grid"]["space"]
+    assert info3["grid"]["bounds"] == pytest.approx(info["grid"]["bounds"], abs=1e-3)
     assert info3["grid"]["has_latlon"] is True
 
     assert client.get("/api/files/doesnotexist/bands").status_code == 404
@@ -150,9 +152,9 @@ def test_value(client, dsf, raw):
     # off the grid
     r = client.get(f"/api/files/{dsf['id']}/value", params={"band": "Rrs_B03", "x": 0, "y": 0}).json()
     assert r["inside"] is False and r["value"] is None
-    # pixel-space file: world Y = -row
-    r = client.get(f"/api/files/{raw['id']}/value", params={"band": "rrs_B3", "x": 50.5, "y": -10.5}).json()
-    assert (r["row"], r["col"]) == (10, 50) and r["lat"] is not None
+    # lat/lon-only file on the recovered grid: the same world point hits the same pixel
+    r = client.get(f"/api/files/{raw['id']}/value", params={"band": "rrs_B3", "x": 584870, "y": 2999790}).json()
+    assert (r["row"], r["col"]) == (10, 50) and -81.5 < r["lon"] < -80.0 and 26.5 < r["lat"] < 27.5
 
 
 # -- render -------------------------------------------------------------------
@@ -204,7 +206,7 @@ def test_render_errors(client, dsf):
     assert client.get("/api/render", params={**base, "op": "wat"}).status_code == 400
 
 
-def test_render_diff(client, dsf, c2r, raw):
+def test_render_diff(client, dsf, c2r, raw, tmp_path):
     p = {"op": "diff", "file": dsf["id"], "band": "Rrs_B03", "file2": c2r["id"], "band2": "rrs_B3",
          "bbox": FULL_BBOX, "w": 80, "h": 60}
     resp = client.get("/api/render", params=p)
@@ -213,8 +215,17 @@ def test_render_diff(client, dsf, c2r, raw):
     assert float(resp.headers["X-Diff-Vmax"]) > 0
     resp = client.get("/api/render", params={**p, "vmax": 0.01})
     assert resp.headers["X-Diff-Vmax"] == "0.01"
-    # pixel-space file cannot be diffed against a projected one
-    assert client.get("/api/render", params={**p, "file2": raw["id"], "band2": "rrs_B3"}).status_code == 400
+    # the lat/lon-only raw C2RCC sits on the recovered grid: diffable against DSFOPT
+    assert _png(client.get("/api/render", params={**p, "file2": raw["id"], "band2": "rrs_B3"})).size == (80, 60)
+    # a file in another space (pixel space: no coordinates at all) cannot be
+    from netCDF4 import Dataset
+    bare_path = tmp_path / "bare.nc"
+    with Dataset(bare_path, "w", format="NETCDF4") as ds:
+        ds.createDimension("y", 60)
+        ds.createDimension("x", 80)
+        ds.createVariable("chl", "f4", ("y", "x"))[:] = np.ones((60, 80), dtype=np.float32)
+    bare = client.get("/api/open", params={"path": str(bare_path)}).json()
+    assert client.get("/api/render", params={**p, "file2": bare["id"], "band2": "chl"}).status_code == 400
     assert client.get("/api/render", params={k: v for k, v in p.items() if k != "file2"}).status_code == 400
 
 

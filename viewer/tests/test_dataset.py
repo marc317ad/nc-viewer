@@ -115,23 +115,31 @@ def test_l2w(l2w_path, array_cache):
         h.close()
 
 
-def test_c2rcc_raw_pixel_space(c2rcc_raw_path, array_cache):
+def test_c2rcc_raw_georeferenced_from_latlon(c2rcc_raw_path, array_cache):
+    """No x/y and no grid mapping, but the 2-D lat/lon describe the same
+    20 m EPSG:32617 lattice as DSFOPT: the grid is recovered from them, so
+    the file shares a view with the optimized products and can be diffed."""
     h = DatasetHandle(c2rcc_raw_path, array_cache)
     try:
         g = h.grid
-        assert g.kind == "pixel" and g.space == "pixel" and g.crs is None
-        assert (g.x0, g.dx, g.y0, g.dy, g.units) == (0.0, 1.0, 0.0, -1.0, "px")
-        assert list(g.bounds) == [0.0, -60.0, 80.0, 0.0]
-        assert g.has_latlon is True
+        # the coordinates are lat/lon (standard_name), not SNAP's aux_* bands,
+        # whose geographic lattice would have made this an EPSG:4326 grid
+        assert (h._lat_name, h._lon_name) == ("lat", "lon")
+        assert g.kind == "projected" and g.space == "EPSG:32617" and g.crs == "EPSG:32617"
+        assert g.units == "m" and g.has_latlon is True
+        assert (g.x0, g.dx, g.y0, g.dy) == pytest.approx((X0_EDGE, STEP, Y0_EDGE, -STEP), abs=1e-3)
+        assert list(g.bounds) == pytest.approx([X0_EDGE, Y0_EDGE - 60 * STEP, X0_EDGE + 80 * STEP, Y0_EDGE], abs=1e-3)
         lon, lat = h.latlon_at(0, 0)
         assert -81 < lon < -80 and 26 < lat < 28
         assert h.latlon_at(60, 0) == (None, None)
         assert h.band("rrs_B3").match_key == "Rrs@560"
         assert h.status_band is None and h.flag_bands == ["c2rcc_flags"]
-        pv = h.value_at("rrs_B3", 40.5, -30.5)          # world Y = -row
+        pv = h.value_at("rrs_B3", X0_EDGE + 40.5 * STEP, Y0_EDGE - 30.5 * STEP)   # row 30, col 40
         assert pv.inside and (pv.row, pv.col) == (30, 40) and isinstance(pv.value, float)
         assert pv.status is None and pv.flags == ["Valid_PE"]
-        assert -81 < pv.lon < -80 and 26 < pv.lat < 28
+        # lon/lat from the recovered grid agree with the arrays in the file
+        assert pv.lon == pytest.approx(float(h.read_band("lon")[30, 40]), abs=1e-6)
+        assert pv.lat == pytest.approx(float(h.read_band("lat")[30, 40]), abs=1e-6)
     finally:
         h.close()
 
@@ -139,10 +147,79 @@ def test_c2rcc_raw_pixel_space(c2rcc_raw_path, array_cache):
 def test_canon(canon_path, array_cache):
     h = DatasetHandle(canon_path, array_cache)
     try:
-        assert h.grid.kind == "pixel" and h.grid.has_latlon is True
+        assert h.grid.kind == "projected" and h.grid.space == "EPSG:32617" and h.grid.has_latlon is True
         assert h.band("Rrs_560").match_key == "Rrs@560"
         assert h.default_band == "Rrs_560"
         assert {b.name for b in h.bands} == {"Rrs_560", "Rrs_865", "c2rcc_flags", "lat", "lon"}
+    finally:
+        h.close()
+
+
+def _write_plain(path, lon=None, lat=None, ny=12, nx=16):
+    """A file with one float band and, when given, 2-D float64 lat/lon."""
+    from netCDF4 import Dataset
+    with Dataset(path, "w", format="NETCDF4") as ds:
+        ds.createDimension("y", ny)
+        ds.createDimension("x", nx)
+        if lat is not None:
+            v = ds.createVariable("lat", "f8", ("y", "x"))
+            v.units = "degrees_north"
+            v[:] = lat
+            v = ds.createVariable("lon", "f8", ("y", "x"))
+            v.units = "degrees_east"
+            v[:] = lon
+        v = ds.createVariable("chl", "f4", ("y", "x"))
+        v.units = "mg m^-3"
+        v[:] = np.random.default_rng(1).random((ny, nx), dtype=np.float32)
+    return path
+
+
+def test_bare_file_is_pixel_space(tmp_path, array_cache):
+    h = DatasetHandle(_write_plain(tmp_path / "bare.nc"), array_cache)
+    try:
+        g = h.grid
+        assert g.kind == "pixel" and g.space == "pixel" and g.crs is None and g.has_latlon is False
+        assert (g.x0, g.dx, g.y0, g.dy, g.units) == (0.0, 1.0, 0.0, -1.0, "px")
+        assert list(g.bounds) == [0.0, -12.0, 16.0, 0.0]
+        assert h.latlon_at(0, 0) == (None, None)
+    finally:
+        h.close()
+
+
+def test_curved_latlon_stays_pixel_space(tmp_path, array_cache):
+    """Lat/lon that are not a lattice (a swath): no candidate CRS makes the
+    sample axis-aligned, so the file keeps its pixel-space view and lon/lat
+    under the cursor come from the arrays."""
+    ny, nx = 12, 16
+    rr, cc = np.mgrid[0:ny, 0:nx].astype(np.float64)
+    lon = -80.5 + 0.002 * cc + 0.0004 * rr * cc          # column spacing grows down the rows
+    lat = 27.2 - 0.002 * rr + 0.0003 * cc ** 2 / nx
+    h = DatasetHandle(_write_plain(tmp_path / "swath.nc", lon, lat, ny, nx), array_cache)
+    try:
+        g = h.grid
+        assert g.kind == "pixel" and g.space == "pixel" and g.crs is None and g.has_latlon is True
+        assert (g.x0, g.dx, g.y0, g.dy, g.units) == (0.0, 1.0, 0.0, -1.0, "px")
+        assert h.latlon_at(3, 5) == (pytest.approx(lon[3, 5]), pytest.approx(lat[3, 5]))
+        pv = h.value_at("chl", 5.5, -3.5)                 # world Y = -row
+        assert pv.inside and (pv.row, pv.col) == (3, 5)
+    finally:
+        h.close()
+
+
+def test_regular_geographic_latlon_grid(tmp_path, array_cache):
+    """Lat/lon that are themselves a regular lattice (a product reprojected
+    to geographic coordinates) become an EPSG:4326 grid in degrees."""
+    ny, nx = 12, 16
+    lon = -80.5 + 0.002 * np.arange(nx, dtype=np.float64)[None, :] + np.zeros((ny, 1))
+    lat = 27.2 - 0.0015 * np.arange(ny, dtype=np.float64)[:, None] + np.zeros((1, nx))
+    h = DatasetHandle(_write_plain(tmp_path / "geo.nc", lon, lat, ny, nx), array_cache)
+    try:
+        g = h.grid
+        assert g.kind == "projected" and g.space == "EPSG:4326" and g.crs == "EPSG:4326" and g.units == "deg"
+        assert (g.x0, g.dx, g.y0, g.dy) == pytest.approx((-80.501, 0.002, 27.20075, -0.0015))
+        assert h.latlon_at(0, 0) == (pytest.approx(-80.5), pytest.approx(27.2))
+        pv = h.value_at("chl", -80.5 + 0.002 * 5, 27.2 - 0.0015 * 3)
+        assert pv.inside and (pv.row, pv.col) == (3, 5)
     finally:
         h.close()
 

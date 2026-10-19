@@ -548,6 +548,69 @@ def _grid_mapping_crs(var_records: Dict[str, dict], band_attrs: Dict[str, dict],
     return None, None
 
 
+#: Lat/lon-only files: the grid is recovered from the 2-D lat/lon when a
+#: sample of them, projected into a candidate CRS, lies on an axis-aligned
+#: lattice to within this many pixels (an exactly gridded product, e.g. SNAP
+#: C2RCC output on the Sentinel-2 UTM grid, deviates by ~1e-9 px).
+LATLON_GRID_TOL_PX = 0.05
+#: Sample lattice: this many rows x this many columns, evenly spread.
+LATLON_GRID_SAMPLES = 7
+#: A lat/lon variable up to this size is read whole for the sample (see
+#: ``DatasetHandle._sample_points``); larger ones are read point by point.
+LATLON_SAMPLE_WHOLE_READ_BYTES = 64 * 1024 * 1024
+
+
+def _utm_epsg(lon: float, lat: float) -> int:
+    """EPSG code of the WGS 84 / UTM zone containing ``(lon, lat)``."""
+    zone = min(60, max(1, int((lon + 180.0) // 6.0) + 1))
+    return (32600 if lat >= 0.0 else 32700) + zone
+
+
+def _fit_axis_aligned(x: np.ndarray, y: np.ndarray, rows: np.ndarray, cols: np.ndarray):
+    """Least squares ``X = xc + dx * col`` and ``Y = yc + dy * row`` over the
+    sample lattice ``x[i, j], y[i, j]`` at ``(rows[i], cols[j])``. Returns
+    ``(xc, dx, yc, dy, worst_residual_px)``, or None when degenerate. A
+    sheared or curved lattice shows up as a large residual because the model
+    lets X depend on the column only and Y on the row only."""
+    rr, cc = np.meshgrid(rows.astype(np.float64), cols.astype(np.float64), indexing="ij")
+    xf, yf = x.ravel(), y.ravel()
+    ax = np.column_stack([np.ones(cc.size), cc.ravel()])
+    ay = np.column_stack([np.ones(rr.size), rr.ravel()])
+    px = np.linalg.lstsq(ax, xf, rcond=None)[0]
+    py = np.linalg.lstsq(ay, yf, rcond=None)[0]
+    xc, dx = float(px[0]), float(px[1])
+    yc, dy = float(py[0]), float(py[1])
+    if not (np.isfinite([xc, dx, yc, dy]).all() and dx != 0.0 and dy != 0.0):
+        return None
+    worst = max(float(np.abs(ax @ px - xf).max()) / abs(dx), float(np.abs(ay @ py - yf).max()) / abs(dy))
+    return xc, dx, yc, dy, worst
+
+
+def _latlon_grid_fit(lon: np.ndarray, lat: np.ndarray, rows: np.ndarray, cols: np.ndarray,
+                     candidates: Sequence[Tuple[str, str]]):
+    """Project the sampled lon/lat into each candidate ``(crs, space)`` and
+    fit an axis-aligned lattice; the best fit within ``LATLON_GRID_TOL_PX``
+    wins. Returns ``(crs, space, units, xc, dx, yc, dy)`` or None."""
+    from pyproj import CRS, Transformer
+    best = None
+    for crs, space in candidates:
+        try:
+            c = CRS.from_user_input(crs)
+            x, y = Transformer.from_crs("EPSG:4326", c, always_xy=True).transform(lon, lat)
+            x = np.asarray(x, dtype=np.float64)
+            y = np.asarray(y, dtype=np.float64)
+        except Exception:
+            continue
+        if not (np.isfinite(x).all() and np.isfinite(y).all()):
+            continue
+        fit = _fit_axis_aligned(x, y, rows, cols)
+        if fit is None or fit[4] > LATLON_GRID_TOL_PX:
+            continue
+        if best is None or fit[4] < best[-1]:
+            best = (crs, space, "deg" if c.is_geographic else "m") + fit
+    return best[:-1] if best is not None else None
+
+
 # ---------------------------------------------------------------------------
 # Array helpers
 # ---------------------------------------------------------------------------
@@ -601,8 +664,14 @@ class DatasetHandle:
     build a projected ``Grid`` from their first two values (edge = centre -
     step/2); CRS from the ``grid_mapping`` variable's ``crs_wkt`` (pyproj ->
     ``"EPSG:NNNN"`` when ``to_epsg()`` resolves, else the WKT), or the global
-    ``analysis_window_epsg`` attribute. Otherwise ``Grid.pixel_space`` with
-    ``has_latlon`` when 2-D lat/lon variables exist.
+    ``analysis_window_epsg`` attribute. Without projection coordinates but
+    with 2-D lat/lon variables (SNAP C2RCC output), a 7 x 7 sample of the
+    lat/lon is projected into candidate CRSs (the file's grid mapping if
+    any, the UTM zone of the scene centre and its two neighbours, then plain
+    lon/lat) and the grid is recovered from the sample when it lies on an
+    axis-aligned lattice within ``LATLON_GRID_TOL_PX``; such a file then
+    shares its space with the projected products and can be diffed against
+    them. Otherwise ``Grid.pixel_space`` with ``has_latlon`` set.
 
     ``default_band``: the band whose ``match_key`` is ``"Rrs@560"`` if any,
     else the first ``"float"`` band, else the first band.
@@ -700,19 +769,50 @@ class DatasetHandle:
         has_latlon = self._lat_name is not None and self._lon_name is not None
 
         grid = self._projected_grid(ds, ydim, xdim, ny, nx, has_latlon, band_attrs)
+        if grid is None and has_latlon:
+            grid = self._latlon_grid(ds, ny, nx, band_attrs)
         self.grid = grid if grid is not None else Grid.pixel_space(ny, nx, has_latlon)
 
     def _latlon_names(self) -> Tuple[Optional[str], Optional[str]]:
-        lat = lon = None
-        for b in self.bands:
-            if b.kind != "latlon":
-                continue
+        """The 2-D latitude and longitude bands, best candidate first: a
+        ``standard_name`` of latitude/longitude, then a name the bands'
+        ``coordinates`` attributes point at, then the plain names
+        ``lat``/``lon`` (``latitude``/``longitude``), then any latlon-kind
+        band whose name contains lat/lon. SNAP C2RCC output carries
+        ``aux_latitude``/``aux_longitude`` (float32, not the pixel
+        coordinates) next to ``lat``/``lon``; those come last."""
+        latlon = [b for b in self.bands if b.kind == "latlon"]
+        if not latlon:
+            return None, None
+        referenced = set()
+        for rec in self._var_records.values():
+            coords = rec["attrs"].get("coordinates")
+            if isinstance(coords, str):
+                referenced.update(coords.split())
+
+        def rank(b: BandInfo, axis: str) -> Optional[int]:
+            full = "latitude" if axis == "lat" else "longitude"
+            std = str(self._var_records[b.name]["attrs"].get("standard_name", "")).lower()
             low = b.name.lower()
-            if lat is None and ("lat" in low):
-                lat = b.name
-            elif lon is None and ("lon" in low):
-                lon = b.name
-        return lat, lon
+            if std == full:
+                return 0
+            if axis not in low:
+                return None
+            if b.name in referenced:
+                return 1
+            if low in (axis, full):
+                return 2
+            return 3
+
+        def pick(axis: str) -> Optional[str]:
+            best = None
+            for b in latlon:
+                r = rank(b, axis)
+                if r is not None and (best is None or r < best[0]):
+                    best = (r, b.name)
+            return best[1] if best else None
+
+        return pick("lat"), pick("lon")
 
     @staticmethod
     def _is_projection_coord(rec: Optional[dict], axis: str, dim: str) -> bool:
@@ -748,6 +848,70 @@ class DatasetHandle:
             bounds=(min(xs), min(ys), max(xs), max(ys)),
             has_latlon=has_latlon, ny=ny, nx=nx,
         )
+
+    def _latlon_grid(self, ds, ny: int, nx: int, band_attrs: Dict[str, dict]) -> Optional[Grid]:
+        """Recover a projected grid from the 2-D lat/lon variables (see the
+        class docstring); None when the sample is not a regular lattice in
+        any candidate CRS. Call under ``NETCDF_LOCK``."""
+        if not (self._lat_name and self._lon_name) or ny < 2 or nx < 2:
+            return None
+        rows = np.unique(np.linspace(0, ny - 1, min(ny, LATLON_GRID_SAMPLES)).round().astype(int))
+        cols = np.unique(np.linspace(0, nx - 1, min(nx, LATLON_GRID_SAMPLES)).round().astype(int))
+        try:
+            lat = self._sample_points(ds.variables[self._lat_name], rows, cols)
+            lon = self._sample_points(ds.variables[self._lon_name], rows, cols)
+        except Exception:
+            return None
+        if lat.shape != (rows.size, cols.size) or lon.shape != lat.shape:
+            return None
+        if not (np.isfinite(lat).all() and np.isfinite(lon).all()):
+            return None
+        candidates: List[Tuple[str, str]] = []
+        crs, space = _grid_mapping_crs(self._var_records, band_attrs, self._global_attrs)
+        if crs and space:
+            candidates.append((crs, space))
+        centre = _utm_epsg(float(lon.mean()), float(lat.mean()))
+        for code in (centre, centre - 1, centre + 1):
+            crs, space = _crs_strings(code)
+            if crs and space and (crs, space) not in candidates:
+                candidates.append((crs, space))
+        if ("EPSG:4326", "EPSG:4326") not in candidates:
+            candidates.append(("EPSG:4326", "EPSG:4326"))
+        try:
+            fit = _latlon_grid_fit(lon, lat, rows, cols, candidates)
+        except Exception:
+            return None
+        if fit is None:
+            return None
+        crs, space, units, xc, dx, yc, dy = fit
+        x0 = xc - dx / 2.0
+        y0 = yc - dy / 2.0
+        xs = (x0, x0 + nx * dx)
+        ys = (y0, y0 + ny * dy)
+        return Grid(
+            kind="projected", crs=crs, space=space,
+            x0=x0, dx=dx, y0=y0, dy=dy, units=units,
+            bounds=(min(xs), min(ys), max(xs), max(ys)),
+            has_latlon=True, ny=ny, nx=nx,
+        )
+
+    @staticmethod
+    def _sample_points(var, rows: np.ndarray, cols: np.ndarray) -> np.ndarray:
+        """``var[rows, cols]`` (orthogonal) as float64 with NaN for masked
+        values. A variable up to ``LATLON_SAMPLE_WHOLE_READ_BYTES`` is read
+        whole: with the viewer's small HDF5 chunk cache, a strided or
+        point-list read of a compressed variable decompresses its chunk once
+        per point (0.8 s for 49 points of a 450 x 1420 C2RCCCANON, against
+        17 ms for the whole array). Larger ones are read point by point."""
+        ny, nx = int(var.shape[0]), int(var.shape[1])
+        if ny * nx * max(int(np.dtype(var.dtype).itemsize), 1) <= LATLON_SAMPLE_WHOLE_READ_BYTES:
+            whole = np.ma.filled(np.ma.asarray(var[:]).astype(np.float64), np.nan)
+            return np.asarray(whole[np.ix_(rows, cols)], dtype=np.float64)
+        out = np.full((rows.size, cols.size), np.nan, dtype=np.float64)
+        for i, r in enumerate(rows):
+            for j, c in enumerate(cols):
+                out[i, j] = float(np.ma.filled(np.ma.asarray(var[int(r), int(c)]).astype(np.float64), np.nan))
+        return out
 
     def _dataset(self):
         """The open netCDF4 dataset (reopened after ``close``). Call under

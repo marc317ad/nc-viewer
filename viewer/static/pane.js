@@ -97,6 +97,7 @@ export class Pane {
     const c = this.canvas;
     this.el.addEventListener("pointerdown", () => this.opts.emit("focus", this), true);
     c.addEventListener("pointerdown", (e) => this._pointerDown(e));
+    c.addEventListener("mousedown", (e) => { if (e.button === 1) e.preventDefault(); }); // no autoscroll on the middle button
     c.addEventListener("pointermove", (e) => this._pointerMove(e));
     c.addEventListener("pointerup", (e) => this._pointerUp(e));
     c.addEventListener("pointercancel", () => { this._drag = null; });
@@ -591,16 +592,18 @@ export class Pane {
   _emitView(view) { this.opts.emit("view", this, view); }
 
   _pointerDown(e) {
-    if (e.button !== 0 || !this.view) return;
+    // left button: drag to pan, click to pin; middle (wheel) button: drag to pan only
+    if ((e.button !== 0 && e.button !== 1) || !this.view) return;
     this.canvas.setPointerCapture(e.pointerId);
-    this._drag = { id: e.pointerId, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false };
+    this._drag = { id: e.pointerId, button: e.button, mask: e.button === 1 ? 4 : 1,
+                   x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, moved: false };
     e.preventDefault();
   }
 
   _pointerMove(e) {
     if (!this.view) return;
     const d = this._drag;
-    if (d && d.id === e.pointerId && (e.buttons & 1)) {
+    if (d && d.id === e.pointerId && (e.buttons & d.mask)) {
       const dx = e.clientX - d.x, dy = e.clientY - d.y;
       d.x = e.clientX; d.y = e.clientY;
       if (Math.abs(e.clientX - d.sx) + Math.abs(e.clientY - d.sy) > 3) d.moved = true;
@@ -624,7 +627,7 @@ export class Pane {
     if (!d || d.id !== e.pointerId) return;
     this._drag = null;
     try { this.canvas.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    if (!d.moved && this.view) {
+    if (d.button === 0 && !d.moved && this.view) {
       const { px, py } = this._local(e);
       const world = screenToWorld(this.view, this.w, this.h, px, py);
       clearTimeout(this._pinTimer);

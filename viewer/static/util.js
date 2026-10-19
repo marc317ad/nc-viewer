@@ -48,7 +48,7 @@ export function fmtNum(v, sig = 4) {
 /** Coordinates: metres to 1 decimal, pixel units to 2 decimals. */
 export function fmtCoord(v, units) {
   if (v == null || Number.isNaN(v)) return "—";
-  return units === "px" ? v.toFixed(2) : v.toFixed(1);
+  return units === "px" ? v.toFixed(2) : units === "deg" ? v.toFixed(5) : v.toFixed(1);
 }
 
 export function fmtBytes(n) {
