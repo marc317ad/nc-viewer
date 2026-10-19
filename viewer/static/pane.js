@@ -114,12 +114,16 @@ export class Pane {
   /** Place a file in the pane (band: requested name or null). Does not set the view. */
   setFile(entry, fileInfo, band = null) {
     const p = this.p;
+    // Keep the previous image on the canvas while the new file's first render
+    // is in flight (its bbox is still meaningful when both files share a
+    // space), so the pane does not go blank behind the "rendering…" badge.
+    const keepStale = !!(p.fileInfo && fileInfo.grid && p.fileInfo.grid.space === fileInfo.grid.space);
     p.entry = entry || null; p.fileId = fileInfo.id || (entry && entry.id); p.fileInfo = fileInfo;
     const b = initialBand(fileInfo, band);
     p.band = b ? b.name : null;
     p.bit = null;
     p.stretch = { mode: "auto", vmin: null, vmax: null, scale: p.stretch.scale };
-    this._dropImage();
+    if (!keepStale) this._dropImage();
     this.autoRange = { vmin: null, vmax: null, diffVmax: null };
     this._fillBands();
     this.emptyEl.classList.add("hidden");
