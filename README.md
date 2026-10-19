@@ -1,291 +1,294 @@
-# NetCDF imagery viewer
+# nc-viewer
 
-A small local web application for the pipeline's NetCDF products: the
-fixed-window `*_DSFOPT.nc` / `*_C2RCCOPT.nc` files and the raw branch outputs
-(`*_L2W.nc`, `*_C2RCC.nc`, `*_C2RCCCANON.nc`). It scans the data roots into a
-catalog, opens files in up to four panes that pan and zoom together, switches
-bands (linked across products by wavelength), stretches, decodes
-`pixel_status` / `l2_flags` / `c2rcc_flags`, reads pixel values with lon/lat,
-shows metadata and band statistics, and renders `A - B` differences.
+A small local web application for looking at NetCDF imagery products side
+by side: open a file, a scene or a pair of products, pan and zoom them
+together, switch bands, stretch, decode the flag words under the cursor,
+read metadata and band statistics, render differences and false-colour
+composites.
 
-Specification and plan: `docs/plans/2026-10-19-nc-viewer-plan.md`.
-Backend: FastAPI + numpy + netCDF4 + Pillow (Python 3.13). Frontend: plain
-HTML/JS/CSS modules, no build step, no network access.
+It was written for Sentinel-2 water-quality products from ACOLITE (DSF) and
+SNAP C2RCC, which is where its band matching, flag decoding and catalog
+grouping come from, but any NetCDF file with 2-D variables opens.
 
-## Run
+- Up to four panes with synchronised pan and zoom, in world coordinates for
+  projected grids or in pixel space for lat/lon-only files.
+- Band switching linked across products by nominal wavelength (`Rrs_B05`
+  in one pane, `rrs_B5` in the other).
+- Auto or manual stretch, log scale, several colormaps, and a lock that
+  applies one stretch to every pane showing the same band.
+- `pixel_status`, `l2_flags`, `c2rcc_flags` and any `flag_masks` variable
+  decoded: bit-count view, single-bit masks, the set flags under the cursor.
+- `A - B` differences with a symmetric diverging palette.
+- RGB false-colour composites from any three bands, with presets.
+- A metadata drawer with global attributes, variables, and band statistics
+  with a histogram.
+- A catalog built from file names (run, tile, scene, role) with a filter,
+  and a URL hash that restores the panes on reload or from a shared link.
 
-Double-click `viewer\run_viewer.bat`, or from the repo root:
+The server is FastAPI + numpy + netCDF4 + Pillow; the frontend is plain
+HTML, CSS and JavaScript modules drawing on a canvas. No build step, no
+database, no network access beyond the loopback interface.
+
+## Requirements
+
+- Python 3.11 or newer (developed and tested on 3.13).
+- Windows, Linux or macOS. Developed on Windows 11; the commands below use
+  Windows paths where the platforms differ.
+- A current browser (Chrome, Edge, Firefox or Safari).
+- Node.js 18 or newer, only to run the frontend unit tests.
+
+## Installation
 
 ```
-C:\Python313\python -m pip install -r viewer\requirements.txt   # once
-C:\Python313\python -m viewer
+git clone https://github.com/marc317ad/nc-viewer.git
+cd nc-viewer
+python -m venv .venv
+.venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-The browser opens http://127.0.0.1:8765/ automatically. Options:
+The package runs from the clone; there is nothing to build or install
+beyond the dependencies. `pytest` and `httpx` in `requirements.txt` are only
+needed for the tests.
+
+## Running
+
+```
+python -m viewer --root D:\data\products
+```
+
+The server starts on http://127.0.0.1:8765/ and opens a browser tab. Every
+`--root` directory is scanned (four levels deep by default) for `*.nc`
+files; the start-up line reports each root and whether it exists.
+
+On Windows, `run_viewer.bat` does the same from a double-click. It uses
+`.venv\Scripts\python.exe` next to it when present, otherwise `python` on
+the PATH, or the interpreter named in a `VIEWER_PYTHON` environment
+variable. Extra arguments pass through: `run_viewer.bat --root D:\other
+--port 9000`.
 
 | option | meaning |
 |---|---|
 | `--root DIR` | add a directory to scan (repeatable) |
-| `--roots-file FILE` | JSON with `roots`, `port`, `cache_mb` ... (default `viewer/roots.json` if present) |
+| `--roots-file FILE` | settings file (below); default `viewer/roots.json` when present |
 | `--port N`, `--host H` | bind address (default 127.0.0.1:8765) |
-| `--cache-mb N` | in-memory band cache budget (default 2048) |
+| `--cache-mb N` | in-memory band cache budget in MB (default 2048) |
 | `--max-depth N` | directory depth scanned below each root (default 4) |
 | `--no-browser` | do not open a browser tab |
 | `--scan-only` | print the catalog summary and exit |
+| `--log-level L` | `debug`, `info` (default), `warning` or `error` |
 
-Default roots: `L:\acolite_compressed_2025`, `L:\acolite_output\sentinel2`,
-`E:\acolite_compressed_2025`, `E:\acolite_output\sentinel2`. Missing roots are
-reported, not fatal. To change them permanently copy `viewer/roots.example.json`
-to `viewer/roots.json` (gitignored) and edit it.
+### Settings file
 
-Use the conda `acolite` environment only for the pipeline; the viewer runs on
-the system Python and never touches that environment.
+To keep the roots permanently, copy `viewer/roots.example.json` to
+`viewer/roots.json` (ignored by git) and edit it:
+
+```json
+{
+  "roots": [
+    {"path": "D:/data/products", "label": "optimized products"},
+    "D:/data/acolite_output"
+  ],
+  "host": "127.0.0.1",
+  "port": 8765,
+  "cache_mb": 2048,
+  "max_depth": 4,
+  "open_browser": true
+}
+```
+
+An entry is a path or `{path, label}`; forward slashes work on Windows.
+Command-line options override the file. A root that does not exist is
+reported as missing at start-up and in the catalog, not treated as an
+error. Without any root the catalog is empty and files are opened by
+absolute path (**Open path** in the catalog drawer).
+
+## What it opens
+
+Any NetCDF file with at least one 2-D variable. How a file is displayed
+depends on what it carries:
+
+- **Projected grid**: 1-D `x`/`y` coordinates and a `grid_mapping`
+  variable with `crs_wkt`, `spatial_ref` or an EPSG code. Panes showing
+  files in the same CRS pan and zoom together in world coordinates, the
+  status bar shows X/Y and lon/lat, and such files can be diffed.
+- **Lat/lon only**: 2-D `lat`/`lon` variables and no grid mapping. The
+  file is displayed in pixel space with its own view (an "unsynced: pixel
+  space" badge); lon/lat under the cursor still come from the arrays.
+- **Flag words**: variables with `flag_masks` / `flag_meanings`, or a name
+  ending in `_flags`. ACOLITE's `l2_flags` takes its bit names from the
+  global `flag_exponent_*` attributes.
+- **`pixel_status`**: a fixed palette (value, outside AOI, flagged, no
+  data) and the meaning under the cursor.
+- **Spectral bands**: names like `Rrs_B04`, `rrs_B4`, `Rrs_665`, `rhow_*`
+  or `rhown_*`, or any variable with a `wavelength` attribute, get a match
+  key `{family}@{nominal nm}` so that **Link bands** and the RGB presets can
+  pair bands across products.
+
+The catalog groups files by the naming convention
+`{PLATFORM}_{SENSOR}_{YYYY}_{MM}_{DD}_{hh}_{mm}_{ss}_{TILE}_{ROLE}.nc`, for
+example `S2B_MSI_2025_01_09_16_05_44_T17RNL_DSFOPT.nc`, and **Compare** on
+a scene row opens its `DSFOPT` and `C2RCCOPT` products side by side. Files
+with other names are listed under their own name and open normally.
+
+Product families exercised so far: ACOLITE DSF (`*_L2W.nc` and the
+fixed-window `*_DSFOPT.nc`), SNAP C2RCC (`*_C2RCC.nc`, `*_C2RCCCANON.nc`,
+`*_C2RCCOPT.nc`), from 8 MB to 4.6 GB per file.
 
 ## Using it
 
 **Catalog (left drawer).** Files are grouped run -> tile -> scene -> role.
 Type in the filter box to narrow by name, run, tile, role or date. Click a
-file to open it in the *target pane* (shown next to the drawer title; click a
-pane to make it the target). **Compare** on a scene row opens its DSFOPT in
-pane 1 and C2RCCOPT in pane 2, side by side and synced. **Open path** opens
-any absolute `.nc` path outside the roots. **Refresh** rescans the roots.
+file to open it in the *target pane* (shown next to the drawer title; click
+a pane to make it the target). **Compare** on a scene row opens its DSFOPT
+in pane 1 and C2RCCOPT in pane 2, side by side and synced. **Open path**
+opens any absolute `.nc` path outside the roots. **Refresh** rescans the
+roots.
 
 **Panes.** Header: band select (grouped Reflectance / Products / Flags /
-Geolocation), colormap, stretch (auto p2-p98, or type min/max; `log` toggle),
-flag bit select for flag bands (count of set bits, or one flag as a mask),
-**RGB** (false-colour composite, below), diff select (`vs pane N`), close.
-The colorbar / legend sits under the image.
+Geolocation), colormap, stretch (auto p2-p98, or type min/max; `log`
+toggle), flag bit select for flag bands (count of set bits, or one flag as
+a mask), **RGB** (false-colour composite, below), diff select (`vs pane
+N`), close. The colorbar or legend sits under the image.
 
-**Topbar.** Layout 1-4, **Sync view** (panes in the same CRS share pan/zoom;
-pixel-space files such as raw C2RCC get their own view and an
-"unsynced: pixel space" badge), **Link bands** (switching a band in one pane
-switches the others to the band with the same nominal wavelength, e.g.
-`Rrs_B05` <-> `rrs_B5`), **Lock stretch** (manual min/max applies to every
-pane showing the same band), **Fit**, **Refresh**, **Metadata** drawer, **?**
-shortcuts.
+**Topbar.** Layout 1-4, **Sync view** (panes in the same CRS share pan and
+zoom; pixel-space files get their own view and an "unsynced: pixel space"
+badge), **Link bands** (switching a band in one pane switches the others to
+the band with the same nominal wavelength, e.g. `Rrs_B05` <-> `rrs_B5`),
+**Lock stretch** (manual min/max applies to every pane showing the same
+band), **Fit**, **Refresh**, **Metadata** drawer, **?** shortcuts.
 
-**Status bar.** Cursor X/Y (metres, EPSG:32617), row/col, lon/lat, and for
-each pane the value under the cursor with its `pixel_status` meaning and the
-set flags. A crosshair marks the same world position in every synced pane.
-Click to pin a position.
+**Status bar.** Cursor X/Y in the file's projected units, row/col, lon/lat,
+and for each pane the value under the cursor with its `pixel_status`
+meaning and the set flags. A crosshair marks the same world position in
+every synced pane. Click to pin a position.
 
 **Metadata drawer (right).** *Metadata*: file, dims, global attributes
 (long values collapsed), variables with their attributes. *Band stats*:
 count/valid/min/max/mean/std/percentiles and a 64-bin histogram with the
-current stretch marked; **Use p2-p98** / **Use min-max** / **Use p5-p95** set
-the stretch.
+current stretch marked; **Use p2-p98** / **Use min-max** / **Use p5-p95**
+set the stretch.
 
-**Diff.** Pick `vs pane N` in a pane's diff select: it renders
-`this pane - pane N` for the two panes' current bands with a symmetric
-diverging palette (red = this pane higher, blue = lower). Both files must be
-in the same CRS. The auto vmax is the 98th percentile of |diff|; type a value
-to fix it.
+**Diff.** Pick `vs pane N` in a pane's diff select: it renders `this pane -
+pane N` for the two panes' current bands with a symmetric diverging palette
+(red = this pane higher, blue = lower). Both files must be in the same CRS.
+The auto vmax is the 98th percentile of |diff|; type a value to fix it.
 
-**RGB composite.** **RGB** in a pane header (or `r`) composes three bands of
-the pane's file on red, green and blue. A third header row appears with a
-preset select (true colour 665/560/492, false-colour NIR 865/665/560, SWIR
-2202/865/665, red edge 704/665/560; presets resolve by nominal wavelength
-within one spectral family, with 833 standing in for 865 and 740 for 704),
-one band select per channel for any custom combination, **shared** and a
-gamma select. Each channel is stretched p2-p98 on its own by default (so a
-dark-water scene still shows colour); **shared** uses one range (the union)
-for all three, which keeps the bands' relative brightness; gamma > 1
-brightens the dark end. Min/max typed in the stretch row apply to every
-channel; `log` works too. A pixel is drawn only where all three channels are
-valid. The legend shows the three channel bands with their ranges, the
-status bar shows the three values under the cursor, and the metadata drawer
-follows the red channel. With **Link bands** on, the other panes follow
-channel by channel (`Rrs_B04/B03/B02` -> `rrs_B4/B3/B2`) or flash when a
-channel has no match. A composite pane cannot be a diff partner; picking a
-diff or a single band leaves composite mode.
+**RGB composite.** **RGB** in a pane header (or `r`) composes three bands
+of the pane's file on red, green and blue. A third header row appears with
+a preset select (true colour 665/560/492, false-colour NIR 865/665/560,
+SWIR 2202/865/665, red edge 704/665/560; presets resolve by nominal
+wavelength within one spectral family, with 833 standing in for 865 and
+740 for 704), one band select per channel for any custom combination,
+**shared** and a gamma select. Each channel is stretched p2-p98 on its own
+by default (so a dark-water scene still shows colour); **shared** uses one
+range (the union) for all three, which keeps the bands' relative
+brightness; gamma > 1 brightens the dark end. Min/max typed in the stretch
+row apply to every channel; `log` works too. A pixel is drawn only where
+all three channels are valid. The legend shows the three channel bands
+with their ranges, the status bar shows the three values under the cursor,
+and the metadata drawer follows the red channel. With **Link bands** on,
+the other panes follow channel by channel (`Rrs_B04/B03/B02` ->
+`rrs_B4/B3/B2`) or flash when a channel has no match. A composite pane
+cannot be a diff partner; picking a diff or a single band leaves composite
+mode.
 
-Keyboard: `1`-`4` layout, `s` sync, `l` link bands, `k` lock stretch, `r`
-RGB composite, `c` catalog, `m` metadata, `F` fit all, `?` help; in a pane:
-drag to pan, wheel to zoom at the cursor, double-click zoom 2x, `+`/`-` zoom,
-`0` fit, arrows pan.
+**Keyboard.** `1`-`4` layout, `s` sync, `l` link bands, `k` lock stretch,
+`r` RGB composite, `c` catalog, `m` metadata, `F` fit all, `?` help; in a
+pane: drag to pan, wheel to zoom at the cursor, double-click zoom 2x,
+`+`/`-` zoom, `0` fit, arrows pan.
 
-The URL hash holds layout, per-pane file:band (or `file:rgb(r,g,b)` for a
-composite) and the toggles, so a reload (or a shared link) restores the
-panes. Shared and gamma are pane-local and not kept in the hash.
+**URL hash.** The hash holds the layout, each pane's file and band (or
+`file:rgb(r,g,b)` for a composite) and the toggles, so a reload or a shared
+link restores the panes. Shared and gamma are pane-local and not kept in
+the hash.
 
 ## Tests
 
 ```
-C:\Python313\python -m pytest viewer/tests -q
+python -m pytest -q
 node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs
 ```
 
-(List the `.mjs` files explicitly: node's default test patterns do not match
-`test_*.mjs`.) The Python suite (51 tests) runs on synthetic files written by
-`viewer/tests/conftest.py`; it needs no data drives. Set
-`VIEWER_REAL_NC=<path to a product>` to also run the one real-file check.
-`viewer/tests/conftest.py` carries the same `%TEMP%` workaround as the main
-suite (the default pytest temp root is unreadable on this machine).
+The Python suite (51 tests) writes small synthetic products to a temporary
+directory and needs no data. Set `VIEWER_REAL_NC=<path to a product>` to
+also run the one real-file check. List the `.mjs` files explicitly: node's
+default test patterns do not match `test_*.mjs`.
 
-## Verified
+## How it works
 
-2026-10-19, branch `feat/nc-viewer`, Windows 11, Python 3.13, Node 22:
+```
+viewer/
+  __main__.py        command line; starts uvicorn
+  server/
+    config.py        roots, host, port, cache size
+    catalog.py       scans the roots and parses file names
+    dataset.py       opens files, detects grid and CRS, reads bands, pixel lookups
+    cache.py         LRU band cache (--cache-mb)
+    stats.py         statistics and histograms
+    render.py        viewport sampling, stretch, colormaps, diff, RGB
+    colormaps.py     colormap tables (colormaps.json)
+    app.py           FastAPI routes and the static files
+  static/            index.html, app.js, pane.js, viewport.js, ... (ES modules)
+  tests/             pytest suite and node tests
+```
 
-- `pytest viewer/tests`: 48 passed, 1 skipped (real-file check).
-  `node --test viewer/tests/test_viewport.mjs`: 8 passed.
-- `--scan-only` over the four default roots: 480 files in 2.2 s
-  (DSFOPT 35, C2RCCOPT 35, L2W 156, C2RCC 157, C2RCCCANON 84, other 13).
-- API against `L:\acolite_compressed_2025\production_dual_wqm`
-  `S2B_MSI_2025_01_09_16_05_58_T17RNK` (grid 454 x 764 at 20 m):
-  open DSFOPT 0.6 s, open C2RCCOPT (62 variables) 1.9 s, stats 20-40 ms,
-  1600x1000 renders of a float band / `pixel_status` / `l2_flags` count /
-  diff all 70-100 ms (server time), pixel value 3 ms.
-- Browser smoke pass (plan section 10) in the desktop app's browser at
-  1600x1000: catalog load with 480 files and no console errors; Compare opens
-  DSFOPT `Rrs_B03` + C2RCCOPT `rrs_B3` synced; wheel zoom moves both panes and
-  the crosshair follows the cursor in both; status bar shows X/Y, row/col,
-  lon/lat and both values with status and flags; Link bands `Rrs_B05` ->
-  `rrs_B5`; `pixel_status` palette + legend; `c2rcc_flags` count view and
-  `Cloud_risk` bit mask; diff `rrs_B3 - Rrs_B03` with symmetric colorbar;
-  Band stats histogram and Use p2-p98; raw `*_C2RCC.nc` in pane 3 shows
-  "unsynced: pixel space" with its own fit; reload restores the three panes
-  from the hash. No server errors logged.
+| endpoint | returns |
+|---|---|
+| `GET /api/config` | roots, host, port, cache budget and usage |
+| `GET /api/catalog?refresh=1` | the scanned files |
+| `GET /api/open?path=` | registers a file outside the roots |
+| `GET /api/files/{id}/bands` | grid, CRS and band list of a file |
+| `GET /api/files/{id}/meta` | global and variable attributes |
+| `GET /api/files/{id}/bands/{band}/stats` | statistics and histogram |
+| `GET /api/files/{id}/value?band=&x=&y=` | the value, status, flags and lon/lat at a pixel |
+| `GET /api/colormaps` | colormap names |
+| `GET /api/render?file=&band=&bbox=&w=&h=` | PNG of a band for a viewport (`op=diff` with `file2`, `band2`) |
+| `GET /api/render_rgb?file=&r=&g=&b=&bbox=&w=&h=` | PNG composite of three bands |
 
-### Large products, memory, E: roots, `--roots-file`
+A band is read whole on first use and kept in the cache (float32; status
+and flag bands as float64); renders sample the cached array for the
+requested viewport, so panning and zooming cost tens of milliseconds while
+the first read of a band is bounded by the disk. All netCDF reads share one
+lock. Each file is opened with a 4 MB HDF5 chunk cache, which keeps the
+server's memory close to the band cache budget on large products.
 
-2026-10-19, branch `claude/brave-mahavira-991b1b` (`pytest viewer/tests`:
-49 passed, 1 skipped; node: 8 passed), desktop app browser at 1600x1000.
-Port 8767 was held by another viewer instance on this machine, so the
-server ran on 8766/8768/8770. Files under
-`L:\acolite_compressed_2025\production_dual_wqm`:
-T17RNL = `S2B_MSI_2025_01_09_16_05_44_T17RNL` (DSFOPT 149 MB, C2RCCOPT
-567 MB, 5455 x 2869 at 20 m) and T17RNM = `S2B_MSI_2025_01_12_16_15_24_T17RNM`
-(DSFOPT 208 MB, C2RCCOPT 805 MB, 5490 x 2717). A float32 band of these is
-57 MB; `pixel_status` and the flag bands are held as float64 (114 MB).
-Browser wall times in ms for the Compare layout (two panes of 457 x 855),
-each pair opened cold on a fresh server; "warm" means the band is in the
-cache:
-
-| Step                                            | T17RNL DSFOPT / C2RCCOPT | T17RNM DSFOPT / C2RCCOPT |
-|-------------------------------------------------|--------------------------|--------------------------|
-| open (`/bands`; C2RCCOPT has 62 variables)      | 406 / 1603               | 340 / 1387               |
-| first band read, cold (`Rrs_B03` / `rrs_B3`)    | 282 / 352                | 331 / 371                |
-| render after pan, warm                          | 20-23                    | 10-14                    |
-| band switch, cold (`Rrs_B05`: stats + render / `rrs_B5`) | 306 + 302 / 511 | 327 + 297 / 615          |
-| `pixel_status`, cold (stats reads it) + render  | 255 + 20 / 81            | 245 + 13 / 76            |
-| `c2rcc_flags` count view, cold                  | - / 233                  | - / 178                  |
-| diff `rrs_B5 - Rrs_B05`, warm (server X-Render-Ms) | 21-22 (18.7)          | 10-21 (17.6)             |
-| stats, cold / warm (`Rrs_B06`)                  | 304 / 2-4                | 327 / 3                  |
-| stats, cold (`c2rcc_flags`)                     | - / 795                  | - / 739                  |
-| warm render, server X-Render-Ms                 | 15.6-20.1                | 14.9-18.3 (800x1000: 29.7) |
-
-Cold reads never came near the 3 s threshold: `read_band` measured outside
-the server takes 149-216 ms per float band, 52-69 ms for `pixel_status`
-and 159-195 ms for a flag band (opens 385-470 ms DSFOPT, 1409-1496 ms
-C2RCCOPT), so the read path itself was left alone. Memory was the problem.
-With four panes (`layout=4`, both pairs, 174 x 388 each) opened cold from
-the URL hash and every pane then switched through `Rrs_B05`/`rrs_B5`,
-`pixel_status` and `l2_flags`/`c2rcc_flags`/`Rrs_B07`/`conc_chl`
-(16 bands read), `Get-Process` on the server, in MB:
-
-| Server build                                   | Working set | Peak WS | Private | Band cache | WS minus cache |
-|------------------------------------------------|-------------|---------|---------|------------|----------------|
-| before (netCDF4 default 64 MB chunk cache)     | 2358        | 2478    | 2962    | 1405       | 953            |
-| 4 MB HDF5 chunk cache per variable             | 1454        | 1673    | 2045    | 1348       | 106            |
-| + no second band copy in `_to_float_array`     | 1632        | 1818    | 2223    | 1456       | 176            |
-
-Cause: netCDF4 gives every variable a 64 MB HDF5 chunk cache, and a
-whole-band read leaves the decompressed chunks parked there for as long as
-the file stays open, about 60 MB per touched variable (measured outside the
-server on the T17RNM C2RCCOPT: 16 band reads cost 1004 MB on top of the band
-cache at the default, 84 MB at a 1 MB chunk cache, with the same read time).
-Fix: `_open_dataset()` in `viewer/server/dataset.py` sets a 4 MB chunk
-cache before every open (covered by
-`test_open_uses_small_hdf5_chunk_cache`), and `_to_float_array()` keeps
-the netCDF4 buffer instead of copying it when the dtype already matches,
-which removes one full-band transient (331 MB / 69 ms on an L2W band).
-No function signature changed; `--cache-mb` stays at 2048. With the fix a
-cold four-pane load shows its first image after ~2.5 s and all four after
-~4.9 s (the two C2RCCOPT opens hold the NetCDF lock ~1.5 s each and the
-other renders queue behind them); four concurrent cold band switches take
-275 / 590 / 730 / 928 ms, serialised on that lock; after the E: files below
-were added as well, the server sat at 1842 MB working set (peak 2589) with
-1741 MB in the cache.
-
-"rendering..." badge: visible for the whole cold read on a band switch
-(338-856 ms) and for a 4.4 s file load, with the previous image still drawn
-underneath. `setFile()` in `viewer/static/pane.js` now keeps the previous
-image while the new file's first render is in flight when both files share
-a space; a pixel-space file replacing a projected one still clears the pane,
-since the old bbox means nothing there (CANON into pane 4: badge for
-724-1045 ms over an empty pane, by design).
-
-E: roots in the browser: `E:\acolite_compressed_2025\S2C_MSI_2026_08_17_16_05_42_T17RNL_C2RCCCANON_optimized.nc`
-(C2RCCCANON, 97 MB, pixel space with 2-D lat/lon,
-5066 x 2274, `Rrs_561`/`Rrs_866`/`c2rcc_flags`) and
-`E:\acolite_output\sentinel2\S2A_MSI_2023_03_29_16_15_37_T17RNL_L2W.nc`
-(L2W, 4637 MB, uncompressed and unchunked, EPSG:32617,
-10153 x 8552, 14 bands) both open and display with the
-Reflectance / Flags / Geolocation groups, and the synthetic `canon` fixture
-already matches the CANON shape, so no new test was needed. A full-tile L2W
-band is 331 MB and its first read takes 4.4-4.6 s: the E: drive delivers
-~72 MB/s (the same band takes 0.15 s once the OS has it cached), so that
-one is disk-bound. Its `l2_flags` caches as float64 (662 MB).
-
-`--roots-file` with a copy of `viewer/roots.example.json` that lists only
-`E:\acolite_compressed_2025`: `/api/config` reports that single root and the
-catalog holds its 7 files and nothing else.
-
-### RGB composite
-
-2026-10-19 (later), on `feat/nc-viewer`, before the merge with the branch above:
-
-- `pytest viewer/tests`: 50 passed, 1 skipped.
-  `node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs`:
-  15 passed.
-- Browser (desktop app, 800x600) on
-  `production_dual_wqm/S2A_MSI_2025_01_04_16_05_57_T17RNK` DSFOPT +
-  C2RCCOPT with Link bands on: **RGB** switches pane 1 to true colour
-  `Rrs_B04/B03/B02` and pane 2 follows as `rrs_B4/B3/B2` (hash shows both
-  `rgb(...)` forms); NIR preset -> `Rrs_B8A/B04/B03` and `rrs_B8A/B4/B3`;
-  gamma 2 and **shared** re-render (legend shows one range for the three
-  channels); a typed max of 0.08 is sent for all three channels; the status
-  bar lists R/G/B values per pane; the diff select is disabled while a pane
-  is a composite; reload restores both composites from the hash; RGB off
-  returns to `Rrs_B03`. 509x597 composite renders 8-18 ms server time. No
-  console or server errors. (On that scene the C2RCCOPT `rrs_*` bands have a
-  single value over all valid pixels, p2 = p98, so its composite is flat
-  grey by construction, not a viewer fault.)
-
-### Merged build
-
-2026-10-19, after merging `claude/brave-mahavira-991b1b` into
-`feat/nc-viewer` (f849b91): `pytest viewer/tests` 51 passed, 1 skipped;
-node 15 passed; all merged files LF-only. In the browser on the restarted
-server: the 2025-01-04 T17RNK pair opens as two composites from the URL
-hash; opening the 2025-01-09 T17RNK DSFOPT from the catalog into pane 1
-keeps the previous image until the new render lands and resets the pane to
-`Rrs_B03`; **Fit** then shows the new footprint. No console or server
-errors. Found and fixed on the way: a hash edited in the address bar
-restored the panes but not the layout and toggle buttons
-(`restoreFromHash` now applies them as boot does).
-
-## Known limits
+## Limits
 
 - The view position is not stored in the URL hash (layout, files, bands and
   toggles are).
-- One band is read whole on first use (float32, ~120 MB for a full 5490 x 5490
-  tile, 331 MB for a full-tile L2W from E:, which takes 4-5 s from that
-  drive); the cache evicts least-recently-used bands past `--cache-mb`.
-  Status and flag bands are held as float64 (`pixel_status` 114 MB on the
-  production tiles, a full-tile L2W `l2_flags` 662 MB), so one of them can
-  displace several float bands.
-- All NetCDF reads share one lock: opening a 62-variable C2RCCOPT holds it
-  for ~1.5 s, and renders for the other panes wait behind it.
-- Diff requires the same CRS; raw C2RCC files (lat/lon only) cannot be
-  diffed against projected products.
-- Single user, loopback only; there is no authentication.
+- A band is read whole: about 120 MB for a 5500 x 5500 float32 tile, 331 MB
+  for a full Sentinel-2 tile at 10 m, with status and flag bands held as
+  float64 at twice that. The cache evicts least-recently-used bands past
+  `--cache-mb`.
+- Opening a file with many variables holds the netCDF lock for a second or
+  two, and renders for the other panes wait behind it.
+- Diff requires the same CRS; lat/lon-only files cannot be diffed against
+  projected products.
+- Single user, loopback only, no authentication.
 
 ## Troubleshooting
 
 - *Port in use*: `python -m viewer --port 8766`.
-- *A root shows "missing"*: the drive is not mounted; the rest keeps working.
+- *A root shows "missing"*: the path does not exist or the drive is not
+  mounted; the rest keeps working.
 - *"cannot open file" (HTTP 422)*: the file is not a readable NetCDF or has
-  no 2-D variables; raw `*_L1R.nc` and manifests are not supported.
+  no 2-D variables; Level-1 radiance files and manifests are not supported.
 - *Blank pane after a band switch*: check the status bar for the server's
   error text; the previous image is kept.
+
+## Documents
+
+- [docs/plans/2026-10-19-nc-viewer-plan.md](docs/plans/2026-10-19-nc-viewer-plan.md):
+  the specification and development plan.
+- [docs/verification-2026-10-19.md](docs/verification-2026-10-19.md):
+  measured timings, memory figures and the browser smoke passes.
+
+The viewer was developed inside the
+[imagery_downloader](https://github.com/marc317ad/imagery_downloader)
+pipeline repository and split into this repository on 2026-10-19 with its
+history.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

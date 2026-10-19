@@ -1,0 +1,5 @@
+# Store LF in the repository; check out LF everywhere (the .bat has no CRLF-sensitive constructs).
+* text=auto eol=lf
+
+*.nc  binary
+*.png binary

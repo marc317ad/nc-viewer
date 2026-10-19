@@ -1,11 +1,10 @@
-# Viewer runtime + test dependencies.
-# Install:  C:\Python313\python -m pip install -r viewer\requirements.txt
+# Runtime dependencies of the viewer (python -m viewer).
 fastapi>=0.110
 uvicorn>=0.27
-httpx>=0.27          # TestClient in the test suite
 numpy>=1.24
-xarray>=2023.1
 netCDF4>=1.6
 pyproj>=3.4
 pillow>=9.0
+# Test suite only (python -m pytest).
 pytest>=7.0
+httpx>=0.27
