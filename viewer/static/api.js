@@ -1,0 +1,102 @@
+// api.js - fetch wrappers for every endpoint of plan section 4. Every failure
+// becomes an ApiError whose .message is the server's {"detail"} text (or a
+// network message), so callers can show it verbatim.
+
+export class ApiError extends Error {
+  constructor(message, status, url) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.url = url;
+  }
+}
+
+async function detailOf(resp) {
+  try {
+    const j = await resp.json();
+    if (j && typeof j.detail === "string") return j.detail;
+    if (j && j.detail) return JSON.stringify(j.detail);
+  } catch { /* not JSON */ }
+  return `${resp.status} ${resp.statusText || "error"}`;
+}
+
+async function getJson(url, signal) {
+  let resp;
+  try {
+    resp = await fetch(url, { signal, headers: { Accept: "application/json" } });
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    throw new ApiError(`server unreachable (${e && e.message ? e.message : e})`, 0, url);
+  }
+  if (!resp.ok) throw new ApiError(await detailOf(resp), resp.status, url);
+  try {
+    return await resp.json();
+  } catch (e) {
+    throw new ApiError(`bad JSON from ${url}: ${e.message}`, resp.status, url);
+  }
+}
+
+const q = (params) => {
+  const s = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null || v === "") continue;
+    s.set(k, Array.isArray(v) ? v.map(String).join(",") : String(v));
+  }
+  return s.toString();
+};
+
+export const getConfig = (signal) => getJson("/api/config", signal);
+export const getColormaps = (signal) => getJson("/api/colormaps", signal);
+export const getCatalog = (refresh = false, signal) => getJson(`/api/catalog?refresh=${refresh ? 1 : 0}`, signal);
+export const openPath = (path, signal) => getJson(`/api/open?${q({ path })}`, signal);
+export const getBands = (id, signal) => getJson(`/api/files/${encodeURIComponent(id)}/bands`, signal);
+export const getMeta = (id, signal) => getJson(`/api/files/${encodeURIComponent(id)}/meta`, signal);
+export const getStats = (id, band, signal) =>
+  getJson(`/api/files/${encodeURIComponent(id)}/bands/${encodeURIComponent(band)}/stats`, signal);
+export const getValue = (id, band, x, y, signal) =>
+  getJson(`/api/files/${encodeURIComponent(id)}/value?${q({ band, x, y })}`, signal);
+
+/**
+ * Build a /api/render URL. `bbox` is [xmin, ymin, xmax, ymax] and is written
+ * with full double precision (String(n) is the shortest round-trip form);
+ * undefined/null params are omitted.
+ */
+export function renderUrl({ file, band, bbox, w, h, op, file2, band2, vmin, vmax, cmap, scale, bit }) {
+  return "/api/render?" + q({
+    op: op && op !== "band" ? op : undefined,
+    file, band,
+    file2, band2,
+    bbox: bbox.map((v) => String(v)),
+    w: Math.round(w), h: Math.round(h),
+    vmin, vmax, cmap,
+    scale: scale && scale !== "linear" ? scale : undefined,
+    bit,
+  });
+}
+
+/**
+ * Fetch a render PNG -> {img: ImageBitmap, headers: {vmin, vmax, diffVmax, renderMs}}.
+ * Throws ApiError with the server detail on non-2xx; rethrows AbortError.
+ */
+export async function loadImage(url, signal) {
+  let resp;
+  try {
+    resp = await fetch(url, { signal });
+  } catch (e) {
+    if (e && e.name === "AbortError") throw e;
+    throw new ApiError(`server unreachable (${e && e.message ? e.message : e})`, 0, url);
+  }
+  if (!resp.ok) throw new ApiError(await detailOf(resp), resp.status, url);
+  const blob = await resp.blob();
+  const num = (k) => { const v = resp.headers.get(k); return v == null || v === "" ? null : Number(v); };
+  const headers = {
+    vmin: num("X-Vmin"), vmax: num("X-Vmax"), diffVmax: num("X-Diff-Vmax"), renderMs: num("X-Render-Ms"),
+  };
+  let img;
+  try {
+    img = await createImageBitmap(blob);
+  } catch (e) {
+    throw new ApiError(`render returned an undecodable image: ${e.message}`, resp.status, url);
+  }
+  return { img, headers };
+}

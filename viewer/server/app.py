@@ -22,7 +22,7 @@ from . import stats as stats_mod
 from .cache import ArrayCache
 from .catalog import Catalog
 from .config import ViewerConfig
-from .dataset import DatasetHandle, DatasetRegistry
+from .dataset import STATUS_MEANINGS, DatasetHandle, DatasetRegistry
 
 log = logging.getLogger("viewer")
 
@@ -162,7 +162,22 @@ def create_app(config: ViewerConfig) -> FastAPI:
     # -- rendering -----------------------------------------------------------
     @app.get("/api/colormaps")
     def api_colormaps():
-        return {"names": cmaps.colormap_names(), "flags": cmaps.flag_palette_names()}
+        names = cmaps.colormap_names()
+        return {
+            "names": names,
+            "flags": cmaps.flag_palette_names(),
+            # exact tables so the client colorbars match the rendered images
+            "luts": {n: cmaps.get_lut(n)[:, :3].tolist() for n in names},
+            "palettes": {
+                "status": [
+                    {"value": v, "name": STATUS_MEANINGS.get(v, str(v)), "rgb": list(rgb)}
+                    for v, rgb in sorted(cmaps.STATUS_COLOURS.items())
+                ],
+                "status_other": list(cmaps.STATUS_OTHER),
+                "mask": {"set": list(cmaps.BIT_SET), "clear": list(cmaps.BIT_CLEAR)},
+                "count": {"zero": list(cmaps.COUNT_ZERO), "ramp": [list(c) for c in cmaps.COUNT_RAMP]},
+            },
+        }
 
     @app.get("/api/render")
     def api_render(
@@ -214,7 +229,7 @@ def create_app(config: ViewerConfig) -> FastAPI:
                 arr2 = _read(handle2, band2)
                 png, used = render_mod.render_diff(
                     arr, handle.grid, arr2, handle2.grid, box, w, h,
-                    vmax=vmax, cmap=cmap or "RdBu",
+                    vmax=vmax, cmap=cmap or "RdBu_r",
                 )
                 headers["X-Diff-Vmax"] = repr(float(used))
             else:

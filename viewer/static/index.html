@@ -2,17 +2,56 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>NetCDF viewer (frontend pending)</title>
-<style>body{font-family:system-ui,sans-serif;background:#111;color:#ddd;padding:2rem}</style>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetCDF viewer</title>
+<link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<h1>NetCDF viewer</h1>
-<p>Placeholder page from the skeleton (WP0). The frontend (WP3) replaces this file.</p>
-<pre id="out">loading /api/config ...</pre>
-<script>
-fetch('/api/config').then(r => r.json()).then(j => {
-  document.getElementById('out').textContent = JSON.stringify(j, null, 2);
-}).catch(e => { document.getElementById('out').textContent = String(e); });
-</script>
+<header id="topbar">
+  <span class="brand">NetCDF viewer <small id="app-version"></small></span>
+  <button id="btn-files" class="toggle" title="show/hide the file catalog (c)">Files</button>
+  <span id="layout-btns" class="group" title="number of panes (1-4)">
+    <button data-layout="1" title="one pane (1)">1</button><button data-layout="2" title="two panes side by side (2)">2</button><button data-layout="3" title="three panes (3)">3</button><button data-layout="4" title="2x2 panes (4)">4</button>
+  </span>
+  <button id="btn-sync" class="toggle" title="panes in the same space share pan/zoom (s)">Sync view</button>
+  <button id="btn-link" class="toggle" title="changing a band switches the other panes to the matching band (l)">Link bands</button>
+  <button id="btn-lock" class="toggle" title="manual min/max applies to every pane showing the same band (k)">Lock stretch</button>
+  <button id="btn-fit" title="fit every pane to its file bounds (F)">Fit</button>
+  <button id="btn-refresh" title="rescan the data roots">Refresh</button>
+  <span class="spacer"></span>
+  <button id="btn-meta" class="toggle" title="show/hide the metadata drawer (m)">Metadata</button>
+  <button id="btn-help" title="keyboard shortcuts (?)">?</button>
+</header>
+<div id="banner" class="hidden"><span id="banner-text"></span><button id="banner-close" title="dismiss">&times;</button></div>
+<main id="main">
+  <aside id="catalog" class="drawer collapsed"></aside>
+  <section id="panes" class="layout-1"></section>
+  <aside id="meta" class="drawer collapsed"></aside>
+</main>
+<footer id="status">
+  <span id="st-cursor" class="mono"></span>
+  <span id="st-values" class="mono"></span>
+  <span id="st-msg"></span>
+</footer>
+<div id="help" class="hidden">
+  <div class="help-box">
+    <div class="help-head"><strong>Keyboard</strong><button id="help-close" title="close">&times;</button></div>
+    <table>
+      <tr><td>drag</td><td>pan</td></tr>
+      <tr><td>wheel / double-click</td><td>zoom at the cursor</td></tr>
+      <tr><td><kbd>+</kbd> <kbd>-</kbd></td><td>zoom around the centre</td></tr>
+      <tr><td><kbd>0</kbd> <kbd>F</kbd></td><td>fit the pane's file bounds</td></tr>
+      <tr><td>arrows</td><td>pan by 10%</td></tr>
+      <tr><td>click</td><td>pin the point (values stay); click again or <kbd>Esc</kbd> to unpin</td></tr>
+      <tr><td><kbd>1</kbd>-<kbd>4</kbd></td><td>layout</td></tr>
+      <tr><td><kbd>Tab</kbd></td><td>focus the next pane (target for the catalog)</td></tr>
+      <tr><td><kbd>s</kbd> <kbd>l</kbd> <kbd>k</kbd></td><td>toggle Sync view / Link bands / Lock stretch</td></tr>
+      <tr><td><kbd>c</kbd> <kbd>m</kbd></td><td>toggle the Files / Metadata drawers</td></tr>
+      <tr><td><kbd>?</kbd></td><td>this help</td></tr>
+    </table>
+    <p class="help-note">Catalog: click a file to open it in the focused pane, shift-click for the next pane; <em>Compare</em> on a scene opens DSFOPT and C2RCCOPT side by side. Empty min/max means auto p2..p98 (the values used appear as placeholders).</p>
+  </div>
+</div>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>
