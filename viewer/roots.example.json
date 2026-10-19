@@ -1,0 +1,14 @@
+{
+  "_comment": "Copy to viewer/roots.json (gitignored) and edit. Paths may use forward slashes.",
+  "roots": [
+    {"path": "L:/acolite_compressed_2025", "label": "L: optimized products (DSFOPT / C2RCCOPT)"},
+    {"path": "L:/acolite_output/sentinel2", "label": "L: raw branch outputs (L2W / C2RCC / CANON)"},
+    {"path": "E:/acolite_compressed_2025", "label": "E: optimized products"},
+    {"path": "E:/acolite_output/sentinel2", "label": "E: raw branch outputs"}
+  ],
+  "host": "127.0.0.1",
+  "port": 8765,
+  "cache_mb": 2048,
+  "max_depth": 4,
+  "open_browser": true
+}

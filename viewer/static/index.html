@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NetCDF viewer (frontend pending)</title>
+<style>body{font-family:system-ui,sans-serif;background:#111;color:#ddd;padding:2rem}</style>
+</head>
+<body>
+<h1>NetCDF viewer</h1>
+<p>Placeholder page from the skeleton (WP0). The frontend (WP3) replaces this file.</p>
+<pre id="out">loading /api/config ...</pre>
+<script>
+fetch('/api/config').then(r => r.json()).then(j => {
+  document.getElementById('out').textContent = JSON.stringify(j, null, 2);
+}).catch(e => { document.getElementById('out').textContent = String(e); });
+</script>
+</body>
+</html>
