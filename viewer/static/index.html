@@ -46,10 +46,12 @@
       <tr><td><kbd>1</kbd>-<kbd>4</kbd></td><td>layout</td></tr>
       <tr><td><kbd>Tab</kbd></td><td>focus the next pane (target for the catalog)</td></tr>
       <tr><td><kbd>s</kbd> <kbd>l</kbd> <kbd>k</kbd></td><td>toggle Sync view / Link bands / Lock stretch</td></tr>
+      <tr><td><kbd>r</kbd></td><td>toggle the RGB composite in the focused pane</td></tr>
       <tr><td><kbd>c</kbd> <kbd>m</kbd></td><td>toggle the Files / Metadata drawers</td></tr>
       <tr><td><kbd>?</kbd></td><td>this help</td></tr>
     </table>
     <p class="help-note">Catalog: click a file to open it in the focused pane, shift-click for the next pane; <em>Compare</em> on a scene opens DSFOPT and C2RCCOPT side by side. Empty min/max means auto p2..p98 (the values used appear as placeholders).</p>
+    <p class="help-note"><strong>RGB</strong> in a pane header shows a false-colour composite: pick a preset (true colour, NIR, SWIR, red edge) or any three float bands for R, G, B. Each channel is stretched p2..p98 on its own; <em>shared</em> uses one range for all three, <em>γ</em> brightens the dark end, min/max apply to every channel. With Link bands on, the other panes follow by wavelength.</p>
   </div>
 </div>
 <script type="module" src="/static/app.js"></script>

@@ -244,6 +244,43 @@ def test_render_diff_identical_and_shifted():
 # performance smoke
 # --------------------------------------------------------------------------
 
+def test_render_rgb_channels_gamma_and_alpha():
+    g = pixel_grid(2, 3)
+    bbox = (0, -2, 3, 0)
+    r = np.array([[0.0, 0.5, 1.0], [1.0, np.nan, 0.0]], dtype=np.float32)
+    gg = np.array([[1.0, 0.5, 0.0], [0.0, 0.5, 1.0]], dtype=np.float32)
+    b = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32)
+    unit = [(0.0, 1.0)] * 3
+    img = decode(render.render_rgb([r, gg, b], [g] * 3, bbox, 3, 2, ranges=unit))
+    assert img.shape == (2, 3, 4)
+    assert tuple(img[0, 0]) == (0, 255, 0, 255)
+    assert tuple(img[0, 1]) == (128, 128, 0, 255)
+    assert tuple(img[0, 2]) == (255, 0, 0, 255)
+    assert tuple(img[1, 0]) == (255, 0, 255, 255)
+    assert tuple(img[1, 1]) == (0, 0, 0, 0)            # NaN in one channel -> transparent
+    assert tuple(img[1, 2]) == (0, 255, 255, 255)
+    # per-channel ranges: halving the red range saturates red at 0.5
+    img2 = decode(render.render_rgb([r, gg, b], [g] * 3, bbox, 3, 2, ranges=[(0.0, 0.5), (0.0, 1.0), (0.0, 1.0)]))
+    assert img2[0, 1, 0] == 255 and img2[0, 1, 1] == 128
+    # gamma 2 lifts the mid-tones (index 128 -> 255 * sqrt(128/255) = 181), endpoints unchanged
+    img3 = decode(render.render_rgb([r, gg, b], [g] * 3, bbox, 3, 2, ranges=unit, gamma=2.0))
+    assert img3[0, 1, 0] == 181 and img3[0, 1, 1] == 181
+    assert tuple(img3[0, 0]) == (0, 255, 0, 255)
+    # log scale: a non-positive channel makes the pixel transparent
+    pos = np.full((2, 3), 0.5, dtype=np.float32)
+    img4 = decode(render.render_rgb([pos, pos, r], [g] * 3, bbox, 3, 2, ranges=[(0.01, 1.0)] * 3, scale="log"))
+    assert img4[0, 0, 3] == 0 and img4[0, 2, 3] == 255
+    # errors
+    with pytest.raises(ValueError):
+        render.render_rgb([r, gg], [g] * 2, bbox, 3, 2, ranges=unit[:2])
+    with pytest.raises(ValueError):
+        render.render_rgb([r, gg, b], [g] * 3, bbox, 3, 2, ranges=unit, gamma=0)
+    with pytest.raises(ValueError):
+        render.render_rgb([r, gg, b], [g] * 3, bbox, 3, 2, ranges=unit, scale="sqrt")
+    with pytest.raises(ValueError):
+        render.render_rgb([r, gg, b], [g] * 3, bbox, 0, 2, ranges=unit)
+
+
 def test_sample_perf_smoke():
     rng = np.random.default_rng(0)
     arr = rng.random((5500, 5500), dtype=np.float32)

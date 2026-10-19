@@ -334,6 +334,61 @@ def render_band(
     raise ValueError(f"unknown kind {kind!r}; expected float, latlon, status or flags")
 
 
+def _gamma_lut(gamma: float) -> Optional[np.ndarray]:
+    """uint8 -> uint8 table for ``out = in ** (1 / gamma)``; None for gamma 1.
+    ``gamma > 1`` lifts the dark end (brighter image), ``< 1`` darkens."""
+    try:
+        gm = float(gamma)
+    except (TypeError, ValueError):
+        raise ValueError(f"gamma must be a number, got {gamma!r}") from None
+    if not np.isfinite(gm) or not (0.1 <= gm <= 10.0):
+        raise ValueError(f"gamma must be in 0.1..10, got {gamma!r}")
+    if gm == 1.0:
+        return None
+    t = np.arange(256, dtype=np.float64) / 255.0
+    return np.rint(255.0 * np.power(t, 1.0 / gm)).astype(np.uint8)
+
+
+def render_rgb(
+    arrays: Sequence[np.ndarray],
+    grids: Sequence[Grid],
+    bbox: Sequence[float],
+    w: int,
+    h: int,
+    *,
+    ranges: Sequence[Tuple[float, float]],
+    scale: str = "linear",
+    gamma: float = 1.0,
+) -> bytes:
+    """False-colour composite: three bands (R, G, B order) each sampled over
+    ``bbox`` from its own ``grid`` and stretched to 0..255 with its own
+    ``(vmin, vmax)`` from ``ranges`` (``scale`` linear or log applies to all
+    three), then ``gamma`` (``out = in ** (1 / gamma)``, 1 = none) and packed
+    as RGBA. A pixel is opaque only where all three channels are finite (and
+    positive under ``log``); elsewhere alpha 0. ``ValueError`` for anything
+    but exactly three arrays / grids / ranges, bad sizes or bbox, an unknown
+    ``scale`` or a ``gamma`` outside 0.1..10."""
+    w, h = _check_size(w, h)
+    if len(arrays) != 3 or len(grids) != 3 or len(ranges) != 3:
+        raise ValueError(f"render_rgb needs exactly three arrays, grids and ranges, got {len(arrays)}, {len(grids)}, {len(ranges)}")
+    if scale not in ("linear", "log"):
+        raise ValueError(f"scale must be 'linear' or 'log', got {scale!r}")
+    glut = _gamma_lut(gamma)
+    rgba = np.zeros((h, w, 4), dtype=np.uint8)
+    valid_all = np.ones((h, w), dtype=bool)
+    for ch, (arr, grid, (lo, hi)) in enumerate(zip(arrays, grids, ranges)):
+        sampled = sample_to_grid(arr, grid, bbox, w, h)
+        indices, valid = stretch_to_bytes(sampled, lo, hi, scale)
+        if glut is not None:
+            indices = glut[indices]
+        rgba[..., ch] = indices
+        valid_all &= valid
+    rgba[..., 3] = np.where(valid_all, np.uint8(255), np.uint8(0))
+    if not valid_all.all():
+        rgba[~valid_all, :3] = 0
+    return encode_png(rgba)
+
+
 def estimate_diff_vmax(diff: np.ndarray) -> float:
     """Symmetric range for a difference image: the 98th percentile of
     ``|diff|`` over finite values (sub-sampled beyond 4 M elements); ``1e-6``

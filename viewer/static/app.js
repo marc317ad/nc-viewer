@@ -5,7 +5,7 @@
 // URL-hash persistence, keyboard shortcuts, error reporting).
 
 import { el, clear, fmtNum, fmtCoord, debounce, inTextField } from "./util.js";
-import { createState, visiblePanes, paneSpace, bandByMatchKey, serializeHash, parseHash, applyHashFlags, MAX_PANES } from "./state.js";
+import { createState, visiblePanes, paneSpace, bandByName, bandByMatchKey, mapRgbByMatchKey, serializeHash, parseHash, applyHashFlags, MAX_PANES } from "./state.js";
 import { rowColAt } from "./viewport.js";
 import { getConfig, getColormaps, getCatalog, getBands, getValue, openPath } from "./api.js";
 import { Pane, fileLabel } from "./pane.js";
@@ -99,8 +99,10 @@ function setFocus(id) {
 }
 function updateMeta() {
   const pane = panes[state.focusedPane - 1];
-  const b = pane && pane.band;
-  metaDrawer.show(pane && pane.hasFile ? pane.p.fileId : null, pane && pane.hasFile ? pane.p.band : null, pane ? pane.effectiveRange() : null, b ? b.kind : null);
+  // in composite mode the drawer follows the red channel
+  const bandName = pane && pane.hasFile ? (pane.isRgb ? pane.rgbNames[0] : pane.p.band) : null;
+  const b = bandName ? bandByName(pane.p.fileInfo, bandName) : null;
+  metaDrawer.show(pane && pane.hasFile ? pane.p.fileId : null, bandName, pane ? pane.effectiveRange() : null, b ? b.kind : null);
 }
 function setLayout(n) {
   n = Math.max(1, Math.min(MAX_PANES, n));
@@ -151,7 +153,7 @@ const writeHash = debounce(() => {
 }, 200);
 
 // -- opening files -------------------------------------------------------------------------
-async function openFile(paneId, entry, { band = null, matchKey = null, fileId = null } = {}) {
+async function openFile(paneId, entry, { band = null, matchKey = null, fileId = null, rgb = null } = {}) {
   const pane = panes[paneId - 1];
   const id = fileId || (entry && entry.id);
   if (!id) return false;
@@ -167,7 +169,7 @@ async function openFile(paneId, entry, { band = null, matchKey = null, fileId = 
   }
   if (!info.id) info.id = id;
   const wanted = band || (matchKey && bandByMatchKey(info, matchKey) ? bandByMatchKey(info, matchKey).name : null);
-  pane.setFile(entry || entries.get(id) || null, info, wanted);
+  pane.setFile(entry || entries.get(id) || null, info, wanted, rgb);
   ensureView(pane); // adopt the space's shared view when another pane shows it, else fit
   for (const q of panes) q.refreshDiffOptions();
   for (const q of panes) if (q.p.diff.enabled && q.p.diff.paneId === paneId) { q._updateHeader(); q.refresh(); }
@@ -209,13 +211,23 @@ function onPaneEvent(type, pane, payload) {
     case "resize": if (pane.hasFile && !pane.view) ensureView(pane); break;
     case "band": {
       if (state.linkBands) {
-        const key = pane.band && pane.band.match_key;
-        for (const q of panes) {
-          if (q === pane || !q.hasFile) continue;
-          const m = key && bandByMatchKey(q.p.fileInfo, key);
-          if (m) q.setBand(m.name, true); else q.flash();
+        if (pane.isRgb) {
+          // composite: the other panes follow channel by channel (by wavelength)
+          for (const q of panes) {
+            if (q === pane || !q.hasFile) continue;
+            const m = mapRgbByMatchKey(pane.p.fileInfo, pane.rgbNames, q.p.fileInfo);
+            if (m) q.setRgb(m, true); else q.flash();
+          }
+        } else {
+          const key = pane.band && pane.band.match_key;
+          for (const q of panes) {
+            if (q === pane || !q.hasFile) continue;
+            const m = key && bandByMatchKey(q.p.fileInfo, key);
+            if (m) q.setBand(m.name, true); else q.flash();
+          }
         }
       }
+      for (const q of panes) q.refreshDiffOptions(); // a composite pane cannot be a diff partner
       for (const q of panes) if (q.p.diff.enabled && q.p.diff.paneId === pane.id) { q._updateHeader(); q.refresh(); }
       updateMeta(); // the focused pane may have followed via Link bands
       if (pinned) fetchValues(pinned, pinned.space);
@@ -224,10 +236,14 @@ function onPaneEvent(type, pane, payload) {
     }
     case "stretch": {
       if (state.lockStretch && !pane.p.diff.enabled) {
-        const key = pane.band && pane.band.match_key;
+        // same band (or same three channels) by match_key
+        const keyOf = (q) => q.isRgb
+          ? "rgb:" + q.rgbNames.map((n) => (bandByName(q.p.fileInfo, n) || {}).match_key).join(",")
+          : (q.band && q.band.match_key);
+        const key = keyOf(pane);
         for (const q of panes) {
           if (q === pane || !q.hasFile || q.p.diff.enabled) continue;
-          if (key && q.band && q.band.match_key === key) q.setStretch({ ...pane.p.stretch });
+          if (key && keyOf(q) === key) q.setStretch({ ...pane.p.stretch });
         }
       }
       if (pane.id === state.focusedPane) metaDrawer.setRange(pane.effectiveRange());
@@ -277,24 +293,31 @@ function onHover(pane, world) {
 const fetchValuesSoon = debounce((world, space) => fetchValues(world, space), 120);
 async function fetchValues(world, space) {
   const seq = ++valueSeq;
-  const targets = visiblePanes(state).filter((p) => p.fileInfo && paneSpace(p) === space && p.band);
+  // one request per band; a composite pane reads its three channels
+  const bandsOf = (p) => (p.rgb && p.rgb.enabled && p.rgb.r && p.rgb.g && p.rgb.b ? [p.rgb.r, p.rgb.g, p.rgb.b] : p.band ? [p.band] : []);
+  const targets = visiblePanes(state).filter((p) => p.fileInfo && paneSpace(p) === space && bandsOf(p).length);
   if (!targets.length) { status.values(null); return; }
-  const results = await Promise.allSettled(targets.map((p) => getValue(p.fileId, p.band, world.x, world.y)));
+  const results = await Promise.all(targets.map((p) => {
+    const names = bandsOf(p);
+    return Promise.allSettled(names.map((n) => getValue(p.fileId, n, world.x, world.y))).then((rs) => ({ names, rs }));
+  }));
   if (seq !== valueSeq) return;
   const nodes = [];
   let lonlat = null;
-  results.forEach((r, i) => {
+  results.forEach(({ names, rs }, i) => {
     const p = targets[i];
     const span = el("span.pv", null, el("b", null, `p${p.id} `));
-    if (r.status === "rejected") { span.append(el("span.error", null, r.reason && r.reason.message ? r.reason.message : "error")); nodes.push(span); return; }
-    const v = r.value || {};
-    if (v.lon != null && v.lat != null && !lonlat) lonlat = v;
-    if (v.inside === false) span.append(`${p.band}: off grid`);
-    else {
-      span.append(`${p.band}=${v.value == null ? "null" : fmtNum(v.value, 5)}`);
-      if (v.status) span.append(el("span.pv-status." + v.status, null, ` ${v.status}`));
-      if (v.flags && v.flags.length) span.append(el("span.pv-flags", { title: v.flags.join(", ") }, ` [${v.flags.join(",")}]`));
-    }
+    rs.forEach((r, k) => {
+      const prefix = names.length === 3 ? ["R ", "G ", "B "][k] : "";
+      if (k) span.append(" ");
+      if (r.status === "rejected") { span.append(prefix, el("span.error", null, r.reason && r.reason.message ? r.reason.message : "error")); return; }
+      const v = r.value || {};
+      if (v.lon != null && v.lat != null && !lonlat) lonlat = v;
+      if (v.inside === false) { span.append(`${prefix}${names[k]}: off grid`); return; }
+      span.append(`${prefix}${names[k]}=${v.value == null ? "null" : fmtNum(v.value, 5)}`);
+      if (k === 0 && v.status) span.append(el("span.pv-status." + v.status, null, ` ${v.status}`));
+      if (k === 0 && v.flags && v.flags.length) span.append(el("span.pv-flags", { title: v.flags.join(", ") }, ` [${v.flags.join(",")}]`));
+    });
     nodes.push(span);
   });
   if (lonlat) nodes.unshift(el("span.pv.lonlat", null, `lon=${lonlat.lon.toFixed(5)} lat=${lonlat.lat.toFixed(5)}`));
@@ -359,6 +382,7 @@ function onKey(e) {
     case "s": setSync(!state.sync); break;
     case "l": setLink(!state.linkBands); break;
     case "k": setLock(!state.lockStretch); break;
+    case "r": { const pane = panes[state.focusedPane - 1]; if (pane && pane.hasFile) pane.setRgbEnabled(!pane.p.rgb.enabled); break; }
     case "1": case "2": case "3": case "4": setLayout(Number(e.key)); break;
     case "Tab": { e.preventDefault(); const n = (state.focusedPane % state.layout) + 1; setFocus(n); panes[n - 1].el.focus(); break; }
     default: {
@@ -393,10 +417,10 @@ async function boot() {
     emit: onPaneEvent,
     resolveDiff: (paneId) => {
       const q = panes[paneId - 1];
-      if (!q || !q.hasFile || !q.p.band) return null;
+      if (!q || !q.hasFile || !q.p.band || q.isRgb) return null;
       return { fileId: q.p.fileId, band: q.p.band, name: q.p.fileInfo.name, label: fileLabel(q.p.entry, q.p.fileInfo), space: q.space };
     },
-    otherPanes: (self) => visiblePanes(state).filter((p) => p.id !== self.id).map((p) => ({ id: p.id, hasFile: !!p.fileInfo, space: paneSpace(p), label: fileLabel(p.entry, p.fileInfo) })),
+    otherPanes: (self) => visiblePanes(state).filter((p) => p.id !== self.id).map((p) => ({ id: p.id, hasFile: !!p.fileInfo, space: paneSpace(p), label: fileLabel(p.entry, p.fileInfo), rgb: !!(p.rgb && p.rgb.enabled && p.rgb.r && p.rgb.g && p.rgb.b) })),
   };
   panes = state.panes.map((p) => new Pane(p, paneOpts));
   const grid = $("panes");
@@ -444,11 +468,14 @@ async function restoreFromHash(initial, parsed = parseHash(location.hash)) {
   const need = Math.max(state.layout, ...ids);
   if (need !== state.layout) setLayout(need);
   for (const id of ids) {
-    const { fileId, band } = parsed.panes[id];
+    const { fileId, band, rgb } = parsed.panes[id];
     const pane = panes[id - 1];
-    if (pane.p.fileId === fileId && (!band || pane.p.band === band)) continue;
-    if (pane.p.fileId === fileId && band) { pane.setBand(band, true); continue; }
-    await openFile(id, entries.get(fileId) || null, { band, fileId });
+    if (pane.p.fileId === fileId) {
+      if (rgb) { if (!pane.isRgb || pane.rgbNames.join() !== rgb.join()) pane.setRgb(rgb, true); }
+      else if (band && (pane.p.band !== band || pane.isRgb)) pane.setBand(band, true);
+      continue;
+    }
+    await openFile(id, entries.get(fileId) || null, { band, fileId, rgb });
   }
   fitAll();
   setFocus(1);

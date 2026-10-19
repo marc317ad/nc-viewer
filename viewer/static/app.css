@@ -67,6 +67,15 @@ option, optgroup { background: var(--bg-2); color: var(--fg); }
 .pane-bit { flex: 0 1 150px; min-width: 56px; }
 .pane-diff-label { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; margin-left: auto; color: var(--fg-dim); }
 .pane-diff { width: 64px; }
+/* RGB composite row: preset + three channel selects */
+.pane-rgb-btn { flex: 0 0 auto; padding: 1px 5px; font-weight: 600; letter-spacing: 0.5px; }
+.ph-rgb { gap: 3px; }
+.pane-preset { flex: 0 1 150px; min-width: 60px; }
+.ch-label { flex: 0 0 auto; width: 12px; text-align: center; font-weight: 700; font-family: var(--mono); }
+.ch-label.r { color: #ff6b6b; } .ch-label.g { color: #6fd08a; } .ch-label.b { color: #6ab0ff; }
+.pane-ch { flex: 1 1 80px; min-width: 48px; }
+.pane-shared { flex: 0 0 auto; padding: 1px 5px; }
+.pane-gamma { flex: 0 0 auto; width: 58px; }
 .pane-body { flex: 1 1 auto; position: relative; min-height: 0; background: var(--canvas); overflow: hidden; }
 .pane-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
 .pane-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--fg-dim); font-style: italic; pointer-events: none; }

@@ -7,8 +7,8 @@
 
 import { el, clear, fmtNum, numOrNull } from "./util.js";
 import { bboxFor, fitTo, zoomAt, panBy, screenToWorld, worldToScreen } from "./viewport.js";
-import { renderUrl, loadImage } from "./api.js";
-import { groupBands, bandLabel, bandByName, initialBand } from "./state.js";
+import { renderUrl, renderRgbUrl, loadImage } from "./api.js";
+import { groupBands, bandLabel, bandByName, initialBand, RGB_PRESETS, resolveRgbPreset, rgbPresetOf, defaultRgb } from "./state.js";
 import { drawGradient, STATUS_CLASSES, countRgb, css, MASK_RGB } from "./colorbar.js";
 
 const MAX_PX = 4096;
@@ -30,7 +30,7 @@ export class Pane {
     this.view = null;               // {cx, cy, mpp} currently displayed (shared object when synced)
     this.w = 0; this.h = 0;         // CSS size of the canvas
     this.img = null; this.imgBbox = null;
-    this.autoRange = { vmin: null, vmax: null, diffVmax: null };
+    this.autoRange = { vmin: null, vmax: null, diffVmax: null, ranges: null };
     this.crosshair = null; this.pin = null;
     this._inflight = null; this._lastUrl = null; this._timer = null;
     this._build();
@@ -55,10 +55,22 @@ export class Pane {
     this.bitSel = el("select.pane-bit", { title: "flag bit: count of set bits or one flag as a mask", onchange: () => { const v = this.bitSel.value; p.bit = v === "" ? null : Number(v); this.refresh(); } });
     this.diffSel = el("select.pane-diff", { title: "difference: this pane minus another pane (same space)", onchange: () => this._onDiff(this.diffSel.value) });
     this.diffLabel = el("label.pane-diff-label", { title: "difference against another pane" }, "−", this.diffSel);
+    // RGB composite controls (row 3, shown in composite mode)
+    this.rgbBtn = el("button.pane-rgb-btn.toggle", { title: "false-colour composite: three bands on R, G, B (r)", onclick: () => this.setRgbEnabled(!p.rgb.enabled) }, "RGB");
+    this.presetSel = el("select.pane-preset", { title: "composite preset (nominal wavelengths R/G/B)", onchange: () => this._onPreset(this.presetSel.value) });
+    this.chSel = {};
+    for (const ch of ["r", "g", "b"]) this.chSel[ch] = el("select.pane-ch", { title: `${{ r: "red", g: "green", b: "blue" }[ch]} channel`, onchange: () => this._onChannel() });
+    this.sharedBtn = el("button.pane-shared.toggle", { title: "one stretch range for all three channels (keeps the bands' relative brightness)", onclick: () => this.setRgbOptions({ shared: !p.rgb.shared }) }, "shared");
+    this.gammaSel = el("select.pane-gamma", { title: "gamma: > 1 brightens the dark end", onchange: () => this.setRgbOptions({ gamma: Number(this.gammaSel.value) }) });
+    for (const g of [0.5, 0.7, 1, 1.5, 2, 3]) this.gammaSel.append(el("option", { value: String(g) }, `γ ${g.toFixed(1)}`));
+    this.gammaSel.value = String(p.rgb.gamma);
 
-    this.row1 = el("div.ph-row", null, this.numEl, this.fileBtn, this.bandSel, this.cmapSel, this.closeBtn);
+    this.row1 = el("div.ph-row", null, this.numEl, this.fileBtn, this.bandSel, this.rgbBtn, this.cmapSel, this.closeBtn);
     this.row2 = el("div.ph-row.ph-stretch", null, this.vminIn, this.vmaxIn, this.autoBtn, this.logBtn, this.bitSel, this.diffLabel);
-    this.header = el("div.pane-header", null, this.row1, this.row2);
+    this.row3 = el("div.ph-row.ph-rgb.hidden", null, this.presetSel,
+      el("span.ch-label.r", null, "R"), this.chSel.r, el("span.ch-label.g", null, "G"), this.chSel.g, el("span.ch-label.b", null, "B"), this.chSel.b,
+      this.sharedBtn, this.gammaSel);
+    this.header = el("div.pane-header", null, this.row1, this.row2, this.row3);
 
     this.canvas = el("canvas.pane-canvas");
     this.ctx = this.canvas.getContext("2d");
@@ -111,17 +123,20 @@ export class Pane {
   setUnsynced(text) { this.badgeSync.textContent = text || ""; this.badgeSync.classList.toggle("show", !!text); }
   flash() { this.header.classList.remove("flash"); void this.header.offsetWidth; this.header.classList.add("flash"); }
 
-  /** Place a file in the pane (band: requested name or null). Does not set the view. */
-  setFile(entry, fileInfo, band = null) {
+  /** Place a file in the pane (band: requested name or null; rgb: [r, g, b] names to open as a composite). Does not set the view. */
+  setFile(entry, fileInfo, band = null, rgb = null) {
     const p = this.p;
     p.entry = entry || null; p.fileId = fileInfo.id || (entry && entry.id); p.fileInfo = fileInfo;
     const b = initialBand(fileInfo, band);
     p.band = b ? b.name : null;
     p.bit = null;
     p.stretch = { mode: "auto", vmin: null, vmax: null, scale: p.stretch.scale };
-    this._dropImage();
-    this.autoRange = { vmin: null, vmax: null, diffVmax: null };
-    this._fillBands();
+    p.rgb = { enabled: false, r: null, g: null, b: null, shared: p.rgb.shared, gamma: p.rgb.gamma };
+    const isFloat = (n) => { const x = bandByName(fileInfo, n); return x && (x.kind === "float" || x.kind === "latlon"); };
+    if (rgb && rgb.length === 3 && rgb.every(isFloat)) { p.rgb.enabled = true; [p.rgb.r, p.rgb.g, p.rgb.b] = rgb; }
+    this._dropImage(); this._lastUrl = null;
+    this.autoRange = { vmin: null, vmax: null, diffVmax: null, ranges: null };
+    this._fillBands(); this._fillChannels();
     this.emptyEl.classList.add("hidden");
     this._updateHeader();
     this._updateControls();
@@ -135,22 +150,24 @@ export class Pane {
     p.entry = null; p.fileId = null; p.fileInfo = null; p.band = null; p.bit = null;
     p.diff = { enabled: false, paneId: null, fileId: null, band: null, vmax: null };
     p.stretch = { mode: "auto", vmin: null, vmax: null, scale: "linear" };
+    p.rgb = { enabled: false, r: null, g: null, b: null, shared: p.rgb.shared, gamma: p.rgb.gamma };
     this.view = null;
     this._dropImage(); this._lastUrl = null;
-    clear(this.bandSel);
+    clear(this.bandSel); this._fillChannels();
     this.emptyEl.classList.remove("hidden");
     this.badgeRender.classList.remove("show");
     this._updateHeader(); this._updateControls(); this.draw(); this._updateColorbar();
     this.opts.emit("close", this);
   }
 
-  /** Switch the band (silent = do not emit, used by Link bands). */
+  /** Switch the band (silent = do not emit, used by Link bands). Leaves composite mode. */
   setBand(name, silent = false) {
     const p = this.p;
-    if (!bandByName(p.fileInfo, name) || p.band === name) return false;
-    p.band = name; p.bit = null;
+    if (!bandByName(p.fileInfo, name) || (p.band === name && !p.rgb.enabled)) return false;
+    p.band = name; p.bit = null; p.rgb.enabled = false;
     p.stretch = { ...p.stretch, mode: "auto", vmin: null, vmax: null };
-    this.autoRange = { vmin: null, vmax: null, diffVmax: null };
+    this.autoRange = { vmin: null, vmax: null, diffVmax: null, ranges: null };
+    this._lastUrl = null;
     this.bandSel.value = name;
     this._updateControls(); this.refresh();
     if (!silent) this.opts.emit("band", this);
@@ -169,11 +186,98 @@ export class Pane {
 
   setCmap(name) { if (this.opts.colormaps.includes(name)) { this.p.cmap = name; this.cmapSel.value = name; this.refresh(); } }
 
-  /** Pair (or unpair, paneId null) this pane as `this - other`. */
+  // -- RGB composite ------------------------------------------------------------
+  /** True when the pane shows a composite (enabled with three channels). */
+  get isRgb() { const r = this.p.rgb; return !!(r && r.enabled && r.r && r.g && r.b); }
+  get rgbNames() { const r = this.p.rgb; return r && r.r && r.g && r.b ? [r.r, r.g, r.b] : null; }
+
+  /** Enter / leave composite mode; entering with no channels set picks the first preset that resolves. */
+  setRgbEnabled(on, silent = false) {
+    const p = this.p;
+    if (!this.hasFile) return false;
+    if (!!on === !!p.rgb.enabled && (!on || this.rgbNames)) return false;
+    if (on) {
+      if (p.diff.enabled) this.setDiff(null, true);
+      if (!this.rgbNames) {
+        const d = defaultRgb(p.fileInfo, p.band);
+        if (!d) { this.flash(); this.opts.emit("error", this, "this file has no three float bands to compose"); return false; }
+        [p.rgb.r, p.rgb.g, p.rgb.b] = d;
+      }
+    }
+    p.rgb.enabled = !!on;
+    this._afterCompositeChange(silent);
+    return true;
+  }
+
+  /** Set the channel bands [r, g, b] (float bands of this file) and enter composite mode. */
+  setRgb(names, silent = false) {
+    const p = this.p;
+    if (!this.hasFile || !names || names.length !== 3) return false;
+    const isFloat = (n) => { const x = bandByName(p.fileInfo, n); return x && (x.kind === "float" || x.kind === "latlon"); };
+    if (!names.every(isFloat)) return false;
+    if (p.rgb.enabled && this.rgbNames && this.rgbNames.every((n, i) => n === names[i])) return false;
+    if (p.diff.enabled) this.setDiff(null, true);
+    [p.rgb.r, p.rgb.g, p.rgb.b] = names;
+    p.rgb.enabled = true;
+    this._afterCompositeChange(silent);
+    return true;
+  }
+
+  /** Composite options {shared, gamma}; pane-local, not propagated. */
+  setRgbOptions(partial) {
+    Object.assign(this.p.rgb, partial);
+    this._lastUrl = null;
+    this._updateControls(); this.refresh();
+  }
+
+  _afterCompositeChange(silent) {
+    const p = this.p;
+    p.bit = null;
+    p.stretch = { ...p.stretch, mode: "auto", vmin: null, vmax: null };
+    this.autoRange = { vmin: null, vmax: null, diffVmax: null, ranges: null };
+    this._lastUrl = null;
+    this._fillChannels(); this._updateControls(); this.refresh();
+    if (!silent) this.opts.emit("band", this);
+  }
+
+  /** Rebuild the preset and channel selects for the current file / composite. */
+  _fillChannels() {
+    const p = this.p, info = p.fileInfo;
+    clear(this.presetSel);
+    for (const ch of ["r", "g", "b"]) clear(this.chSel[ch]);
+    if (!info) return;
+    for (const pr of RGB_PRESETS) {
+      const names = resolveRgbPreset(info, pr, p.band);
+      this.presetSel.append(el("option", { value: pr.id, disabled: !names, title: names ? names.join(" / ") : "bands not available in this file" }, pr.label));
+    }
+    this.presetSel.append(el("option", { value: "custom" }, "custom"));
+    this.presetSel.value = rgbPresetOf(info, this.rgbNames, p.band);
+    const floats = info.bands.filter((b) => b.kind === "float" || b.kind === "latlon");
+    for (const ch of ["r", "g", "b"]) {
+      for (const [g, bands] of groupBands(floats)) {
+        const og = el("optgroup", { label: g });
+        for (const b of bands) og.append(el("option", { value: b.name, title: b.long_name || b.name }, bandLabel(b)));
+        this.chSel[ch].append(og);
+      }
+      if (p.rgb[ch]) this.chSel[ch].value = p.rgb[ch];
+    }
+  }
+
+  _onPreset(id) {
+    if (id === "custom") return;
+    const names = resolveRgbPreset(this.p.fileInfo, id, this.p.band);
+    if (names) this.setRgb(names);
+    else this.presetSel.value = rgbPresetOf(this.p.fileInfo, this.rgbNames, this.p.band);
+  }
+
+  _onChannel() { this.setRgb(["r", "g", "b"].map((ch) => this.chSel[ch].value)); }
+
+  /** Pair (or unpair, paneId null) this pane as `this - other`. Leaves composite mode. */
   setDiff(paneId, silent = false) {
     const p = this.p;
     const other = paneId ? this.opts.resolveDiff(paneId) : null;
     if (paneId && !other) paneId = null;
+    if (paneId && p.rgb.enabled) { p.rgb.enabled = false; this._lastUrl = null; }
     const was = p.diff.enabled;
     p.diff = { enabled: !!paneId, paneId: paneId || null, fileId: other ? other.fileId : null, band: other ? other.band : null, vmax: p.diff.vmax };
     // diverging map while in diff mode; restore the previous map when leaving it
@@ -193,13 +297,14 @@ export class Pane {
     this.diffSel.append(el("option", { value: "" }, "—"));
     let curOk = false;
     for (const q of others) {
-      const ok = q.hasFile && this.space && q.space === this.space;
-      const why = !q.hasFile ? "pane is empty" : q.space !== this.space ? `different space (${q.space})` : `${q.label}`;
+      const ok = q.hasFile && this.space && q.space === this.space && !q.rgb;
+      const why = !q.hasFile ? "pane is empty" : q.space !== this.space ? `different space (${q.space})` : q.rgb ? "pane shows an RGB composite" : `${q.label}`;
       this.diffSel.append(el("option", { value: String(q.id), disabled: !ok, title: why }, `pane ${q.id}`));
       if (ok && q.id === cur) curOk = true;
     }
-    this.diffSel.disabled = !this.hasFile || others.every((q) => !(q.hasFile && q.space === this.space));
-    this.diffSel.title = this.diffSel.disabled ? "difference needs another pane with a file in the same space" : "difference: this pane minus another pane";
+    this._diffBaseDisabled = !this.hasFile || others.every((q) => !(q.hasFile && q.space === this.space && !q.rgb));
+    this.diffSel.disabled = this._diffBaseDisabled || this.isRgb;
+    this.diffSel.title = this._diffBaseDisabled ? "difference needs another pane with a single band in the same space" : this.isRgb ? "no difference while this pane shows a composite" : "difference: this pane minus another pane";
     if (cur && !curOk) this.setDiff(null, true);
     else { this.diffSel.value = cur ? String(cur) : ""; if (cur) { const o = this.opts.resolveDiff(cur); if (o) { this.p.diff.fileId = o.fileId; this.p.diff.band = o.band; } this._updateHeader(); } }
   }
@@ -241,6 +346,12 @@ export class Pane {
       p.diff.fileId = other.fileId; p.diff.band = other.band;
       return { op: "diff", file: p.fileId, band: p.band, file2: other.fileId, band2: other.band, bbox, w, h, vmax: p.diff.vmax, cmap: p.cmap };
     }
+    if (this.isRgb) {
+      const [r, g, b] = this.rgbNames;
+      const out = { op: "rgb", file: p.fileId, r, g, b, bbox, w, h, shared: p.rgb.shared, gamma: p.rgb.gamma, scale: p.stretch.scale };
+      if (p.stretch.mode === "manual") for (const ch of ["r", "g", "b"]) { out[ch + "min"] = p.stretch.vmin; out[ch + "max"] = p.stretch.vmax; }
+      return out;
+    }
     const kind = band ? band.kind : "float";
     const out = { file: p.fileId, band: p.band, bbox, w, h };
     if (kind === "float" || kind === "latlon") {
@@ -256,7 +367,7 @@ export class Pane {
   async _render() {
     const params = this._renderParams();
     if (!params) return;
-    const url = renderUrl(params);
+    const url = params.op === "rgb" ? renderRgbUrl(params) : renderUrl(params);
     if (url === this._lastUrl && this.img) return;
     if (this._inflight) this._inflight.abort();
     const ctl = (this._inflight = new AbortController());
@@ -267,7 +378,11 @@ export class Pane {
       this._dropImage();
       this.img = img; this.imgBbox = params.bbox; this._lastUrl = url;
       if (params.op === "diff") this.autoRange.diffVmax = headers.diffVmax;
-      else { if (headers.vmin != null) this.autoRange.vmin = headers.vmin; if (headers.vmax != null) this.autoRange.vmax = headers.vmax; }
+      else if (params.op === "rgb") {
+        const rg = headers.ranges;
+        this.autoRange.ranges = rg;
+        if (rg && rg.r && rg.g && rg.b) { this.autoRange.vmin = Math.min(rg.r[0], rg.g[0], rg.b[0]); this.autoRange.vmax = Math.max(rg.r[1], rg.g[1], rg.b[1]); }
+      } else { if (headers.vmin != null) this.autoRange.vmin = headers.vmin; if (headers.vmax != null) this.autoRange.vmax = headers.vmax; }
       this._updatePlaceholders(); this._updateColorbar();
       this.draw();
       this.opts.emit("rendered", this, headers);
@@ -359,26 +474,33 @@ export class Pane {
       this.fileBtn.title = `A − B\nA: ${p.fileInfo.name} : ${p.band}\nB: ${o ? o.name + " : " + o.band : "?"}`;
     } else {
       this.fileBtn.textContent = me;
-      this.fileBtn.title = p.fileInfo.path || p.fileInfo.name;
+      this.fileBtn.title = (p.fileInfo.path || p.fileInfo.name) + (this.isRgb ? `\nRGB: ${this.rgbNames.join(" / ")}` : "");
     }
   }
 
   _updateControls() {
     const p = this.p, band = this.band, kind = band ? band.kind : null;
-    const diff = p.diff.enabled;
+    const diff = p.diff.enabled, rgb = this.isRgb;
     const isFloat = kind === "float" || kind === "latlon";
     const show = (node, on) => node.classList.toggle("hidden", !on);
-    show(this.bandSel, this.hasFile);
-    show(this.cmapSel, this.hasFile && (isFloat || diff));
-    show(this.vminIn, this.hasFile && isFloat && !diff);
-    show(this.vmaxIn, this.hasFile && (isFloat || diff));
-    show(this.autoBtn, this.hasFile && (isFloat || diff));
-    show(this.logBtn, this.hasFile && isFloat && !diff);
-    show(this.bitSel, this.hasFile && kind === "flags" && !diff);
+    show(this.bandSel, this.hasFile && !rgb);
+    show(this.rgbBtn, this.hasFile && !diff);
+    this.rgbBtn.classList.toggle("on", rgb);
+    show(this.cmapSel, this.hasFile && (isFloat || diff) && !rgb);
+    show(this.vminIn, this.hasFile && ((isFloat && !diff) || rgb));
+    show(this.vmaxIn, this.hasFile && (isFloat || diff || rgb));
+    show(this.autoBtn, this.hasFile && (isFloat || diff || rgb));
+    show(this.logBtn, this.hasFile && ((isFloat && !diff) || rgb));
+    show(this.bitSel, this.hasFile && kind === "flags" && !diff && !rgb);
     show(this.diffLabel, this.hasFile);
     show(this.closeBtn, this.hasFile);
+    show(this.row3, this.hasFile && rgb);
+    this.sharedBtn.classList.toggle("on", !!p.rgb.shared);
+    this.gammaSel.value = String(p.rgb.gamma);
+    this.diffSel.disabled = !!this._diffBaseDisabled || rgb;
     this.logBtn.classList.toggle("on", p.stretch.scale === "log");
-    this.vmaxIn.title = diff ? "symmetric range |A − B| <= vmax (empty = server estimate)" : "stretch maximum (empty = auto p98)";
+    this.vminIn.title = rgb ? "stretch minimum for all three channels (empty = each channel's p2)" : "stretch minimum (empty = auto p2)";
+    this.vmaxIn.title = diff ? "symmetric range |A − B| <= vmax (empty = server estimate)" : rgb ? "stretch maximum for all three channels (empty = each channel's p98)" : "stretch maximum (empty = auto p98)";
     if (kind === "flags") {
       clear(this.bitSel);
       this.bitSel.append(el("option", { value: "" }, "count of set bits"));
@@ -440,6 +562,14 @@ export class Pane {
     if (!this.hasFile) { legend([]); return; }
     const r = this.effectiveRange();
     if (p.diff.enabled) { gradient(p.cmap, r ? "−" + fmtNum(r.vmax) : "−vmax", r ? "+" + fmtNum(r.vmax) : "+vmax"); return; }
+    if (this.isRgb) {
+      const rg = this.autoRange.ranges, keys = ["r", "g", "b"], cols = ["#ff6b6b", "#6fd08a", "#6ab0ff"];
+      legend(this.rgbNames.map((n, i) => {
+        const rr = rg && rg[keys[i]];
+        return { label: rr ? `${n} ${fmtNum(rr[0])}…${fmtNum(rr[1])}` : n, color: cols[i], title: `${keys[i].toUpperCase()}: ${n}${p.rgb.shared ? " (shared range)" : ""}` };
+      }));
+      return;
+    }
     if (kind === "status") { legend(STATUS_CLASSES.map((c) => ({ label: c.name, color: css(c.rgb), title: `pixel_status = ${c.value}` }))); return; }
     if (kind === "flags") {
       if (p.bit != null) { const nm = (band.flag_meanings || [])[p.bit] || `bit ${p.bit}`; legend([{ label: nm + " set", color: css(MASK_RGB) }, { label: "clear", color: "transparent" }]); return; }

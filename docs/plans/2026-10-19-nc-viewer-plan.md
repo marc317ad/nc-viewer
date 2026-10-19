@@ -146,6 +146,7 @@ All endpoints are `GET`, JSON unless stated. File identity is the catalog
 | `/api/files/{id}/value?band=&x=&y=` | `PixelValue` |
 | `/api/render?file=&band=&bbox=xmin,ymin,xmax,ymax&w=&h=[&vmin=&vmax=&cmap=viridis&scale=linear or log&bit=N]` | `image/png` RGBA `w`x`h` |
 | `/api/render?op=diff&file=&band=&file2=&band2=&bbox=&w=&h=[&vmax=&cmap=RdBu]` | `image/png`, `A - B`, symmetric range `[-vmax, vmax]`; response header `X-Diff-Vmax` carries the value used |
+| `/api/render_rgb?file=&r=&g=&b=&bbox=&w=&h=[&rmin=&rmax=&gmin=&gmax=&bmin=&bmax=&shared=0 or 1&scale=linear or log&gamma=1.0]` | *(added after v0.1)* `image/png` RGBA composite of three float bands of one file; each channel stretched to its own `[min,max]` (default p2-p98 of that band, `shared=1` = union of the three), `gamma` in 0.1-10 applied as `out = in**(1/gamma)`, opaque only where all three channels are valid; headers `X-Range-R/G/B` = `lo,hi` used per channel |
 | `/api/colormaps` | `{names:[...], flags:[...]}` |
 | `/` and `/static/*` | the frontend |
 
@@ -313,7 +314,7 @@ Run:
 
 ```
 C:\Python313\python -m pytest viewer/tests -q
-node --test viewer/tests/test_viewport.mjs
+node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs
 ```
 
 ## 9. Work packages

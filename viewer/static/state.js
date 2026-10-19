@@ -15,7 +15,83 @@ export function createPane(id) {
     stretch: { mode: "auto", vmin: null, vmax: null, scale: "linear" },
     bit: null,          // flags kind: null = count view, else 0-based index into flag_masks
     diff: { enabled: false, paneId: null, fileId: null, band: null, vmax: null },
+    // false-colour composite: three float bands of this file on R, G, B.
+    // `shared` = one stretch range for all channels; `gamma` > 1 brightens.
+    rgb: { enabled: false, r: null, g: null, b: null, shared: false, gamma: 1 },
   };
+}
+
+// -- RGB composites ------------------------------------------------------------
+// Presets are nominal Sentinel-2 wavelengths per channel, first choice first
+// (865 = B8A at 20 m, 833 = B08 when only the 10 m band is present).
+
+export const RGB_PRESETS = [
+  { id: "true", label: "True colour (665/560/492)", channels: [[665], [560], [492]] },
+  { id: "nir", label: "False colour NIR (865/665/560)", channels: [[865, 833], [665], [560]] },
+  { id: "swir", label: "SWIR (2202/865/665)", channels: [[2202, 1614], [865, 833], [665]] },
+  { id: "rededge", label: "Red edge (704/665/560)", channels: [[704, 740], [665], [560]] },
+];
+
+const FAMILY_ORDER = ["Rrs", "rhow", "rhos", "rhot", "rhorc"];
+const familyOf = (b) => (b && typeof b.match_key === "string" && b.match_key.includes("@") ? b.match_key.split("@")[0] : null);
+
+/** Spectral families present in `fileInfo`, the family of `preferBand` first, then Rrs, rhow, ... */
+export function spectralFamilies(fileInfo, preferBand = null) {
+  const fams = new Set();
+  const pb = preferBand ? bandByName(fileInfo, preferBand) : null;
+  if (familyOf(pb)) fams.add(familyOf(pb));
+  for (const f of FAMILY_ORDER) fams.add(f);
+  for (const b of (fileInfo && fileInfo.bands) || []) if (b.kind === "float" && familyOf(b)) fams.add(familyOf(b));
+  return [...fams];
+}
+
+/** Band names [r, g, b] for a preset (id or object) in `fileInfo`, all from one family; null when a channel is missing. */
+export function resolveRgbPreset(fileInfo, preset, preferBand = null) {
+  const pr = typeof preset === "string" ? RGB_PRESETS.find((p) => p.id === preset) : preset;
+  if (!fileInfo || !pr) return null;
+  for (const fam of spectralFamilies(fileInfo, preferBand)) {
+    const names = pr.channels.map((cands) => {
+      for (const wl of cands) {
+        const b = bandByMatchKey(fileInfo, `${fam}@${wl}`);
+        if (b && b.kind === "float") return b.name;
+      }
+      return null;
+    });
+    if (names.every(Boolean)) return names;
+  }
+  return null;
+}
+
+/** Preset id that resolves to exactly `names` for this file, else "custom". */
+export function rgbPresetOf(fileInfo, names, preferBand = null) {
+  if (!names || names.length !== 3) return "custom";
+  for (const pr of RGB_PRESETS) {
+    const r = resolveRgbPreset(fileInfo, pr, preferBand);
+    if (r && r.every((n, i) => n === names[i])) return pr.id;
+  }
+  return "custom";
+}
+
+/** Composite to start with: the first preset that resolves, else three float bands (longest wavelength on R), else null. */
+export function defaultRgb(fileInfo, preferBand = null) {
+  for (const pr of RGB_PRESETS) {
+    const r = resolveRgbPreset(fileInfo, pr, preferBand);
+    if (r) return r;
+  }
+  const floats = ((fileInfo && fileInfo.bands) || []).filter((b) => b.kind === "float");
+  if (floats.length < 3) return null;
+  return [floats[2].name, floats[1].name, floats[0].name];
+}
+
+/** Map a composite of `srcInfo` onto `dstInfo` by match_key; null unless all three channels resolve. */
+export function mapRgbByMatchKey(srcInfo, names, dstInfo) {
+  if (!names || names.length !== 3) return null;
+  const out = names.map((n) => {
+    const b = bandByName(srcInfo, n);
+    const m = b && bandByMatchKey(dstInfo, b.match_key);
+    return m && m.kind === "float" ? m.name : null;
+  });
+  return out.every(Boolean) ? out : null;
 }
 
 export function createState() {
@@ -88,13 +164,15 @@ export function bandLabel(b) {
 }
 
 // -- URL hash ----------------------------------------------------------------
-// #layout=2&p1=<fileId>:<band>&p2=<fileId>:<band>&sync=1&link=1&lock=0
+// #layout=2&p1=<fileId>:<band>&p2=<fileId>:rgb(<r>,<g>,<b>)&sync=1&link=1&lock=0
 
 export function serializeHash(state) {
   const q = new URLSearchParams();
   q.set("layout", String(state.layout));
   for (const p of state.panes) {
-    if (p.fileId) q.set(`p${p.id}`, p.band ? `${p.fileId}:${p.band}` : p.fileId);
+    if (!p.fileId) continue;
+    const rgb = p.rgb && p.rgb.enabled && p.rgb.r && p.rgb.g && p.rgb.b ? `rgb(${p.rgb.r},${p.rgb.g},${p.rgb.b})` : null;
+    q.set(`p${p.id}`, rgb ? `${p.fileId}:${rgb}` : p.band ? `${p.fileId}:${p.band}` : p.fileId);
   }
   q.set("sync", state.sync ? "1" : "0");
   q.set("link", state.linkBands ? "1" : "0");
@@ -102,7 +180,8 @@ export function serializeHash(state) {
   return "#" + q.toString();
 }
 
-/** Parse a hash into {layout, sync, linkBands, lockStretch, panes:{1:{fileId, band}}}; tolerant of junk. */
+/** Parse a hash into {layout, sync, linkBands, lockStretch, panes:{1:{fileId, band, rgb}}}; tolerant of junk.
+ *  `rgb` is [r, g, b] band names for a `rgb(r,g,b)` band field (then `band` is null), else undefined. */
 export function parseHash(hash) {
   const out = { layout: null, sync: null, linkBands: null, lockStretch: null, panes: {} };
   const text = (hash || "").replace(/^#/, "");
@@ -120,8 +199,15 @@ export function parseHash(hash) {
     if (!v) continue;
     const idx = v.indexOf(":");
     const fileId = idx < 0 ? v : v.slice(0, idx);
-    const band = idx < 0 ? null : v.slice(idx + 1) || null;
-    if (/^[A-Za-z0-9_-]{1,64}$/.test(fileId)) out.panes[i] = { fileId, band };
+    let band = idx < 0 ? null : v.slice(idx + 1) || null;
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(fileId)) continue;
+    const m = band && /^rgb\((.*)\)$/.exec(band);
+    if (m) {
+      const parts = m[1].split(",").map((s) => s.trim());
+      band = null;
+      if (parts.length === 3 && parts.every(Boolean)) { out.panes[i] = { fileId, band, rgb: parts }; continue; }
+    }
+    out.panes[i] = { fileId, band };
   }
   return out;
 }

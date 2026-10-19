@@ -218,6 +218,45 @@ def test_render_diff(client, dsf, c2r, raw):
     assert client.get("/api/render", params={k: v for k, v in p.items() if k != "file2"}).status_code == 400
 
 
+def test_render_rgb(client, dsf, c2r):
+    p = {"file": dsf["id"], "r": "Rrs_B8A", "g": "Rrs_B04", "b": "Rrs_B03", "bbox": FULL_BBOX, "w": 80, "h": 60}
+    resp = client.get("/api/render_rgb", params=p)
+    img = _png(resp)
+    assert img.size == (80, 60)
+    a = np.asarray(img)
+    assert a[30, 5, 3] == 0 and a[30, 60, 3] == 255     # outside_aoi transparent, data opaque
+    rng = {k: [float(v) for v in resp.headers[f"X-Range-{k}"].split(",")] for k in "RGB"}
+    assert all(lo < hi for lo, hi in rng.values())
+    assert float(resp.headers["X-Render-Ms"]) >= 0
+    # shared=1: one range for all channels, the union of the three
+    resp2 = client.get("/api/render_rgb", params={**p, "shared": 1})
+    _png(resp2)
+    assert resp2.headers["X-Range-R"] == resp2.headers["X-Range-G"] == resp2.headers["X-Range-B"]
+    shared = [float(v) for v in resp2.headers["X-Range-R"].split(",")]
+    assert shared[0] == min(v[0] for v in rng.values()) and shared[1] == max(v[1] for v in rng.values())
+    # manual bounds are echoed; a missing bound falls back to the percentile
+    resp3 = client.get("/api/render_rgb", params={**p, "rmin": 0, "rmax": 0.05, "gmin": 0.001})
+    _png(resp3)
+    assert resp3.headers["X-Range-R"] == "0.0,0.05"
+    assert resp3.headers["X-Range-G"].startswith("0.001,")
+    assert resp3.headers["X-Range-B"] == resp.headers["X-Range-B"]
+    # gamma > 1 brightens the opaque pixels
+    bright = np.asarray(_png(client.get("/api/render_rgb", params={**p, "gamma": 2})))
+    opaque = a[..., 3] == 255
+    assert bright[opaque][:, :3].mean() > a[opaque][:, :3].mean()
+    # log scale accepted; the C2RCC product works with its own band names
+    _png(client.get("/api/render_rgb", params={**p, "scale": "log"}))
+    _png(client.get("/api/render_rgb", params={**p, "file": c2r["id"], "r": "rrs_B8A", "g": "rrs_B4", "b": "rrs_B3"}))
+    # errors
+    assert client.get("/api/render_rgb", params={**p, "b": "pixel_status"}).status_code == 400
+    assert client.get("/api/render_rgb", params={**p, "g": "nope"}).status_code == 404
+    assert client.get("/api/render_rgb", params={**p, "file": "nope"}).status_code == 404
+    assert client.get("/api/render_rgb", params={**p, "gamma": 0}).status_code == 400
+    assert client.get("/api/render_rgb", params={**p, "w": 0}).status_code == 400
+    assert client.get("/api/render_rgb", params={**p, "scale": "sqrt"}).status_code == 422
+    assert client.get("/api/render_rgb", params={k: v for k, v in p.items() if k != "b"}).status_code == 422
+
+
 def test_render_subwindow_alignment(client, dsf):
     # A 1-pixel bbox at col 50,row 10 renders a uniform colour equal to that pixel's stretch
     x0 = XMIN + 50 * 20

@@ -53,7 +53,8 @@ any absolute `.nc` path outside the roots. **Refresh** rescans the roots.
 **Panes.** Header: band select (grouped Reflectance / Products / Flags /
 Geolocation), colormap, stretch (auto p2-p98, or type min/max; `log` toggle),
 flag bit select for flag bands (count of set bits, or one flag as a mask),
-diff select (`vs pane N`), close. The colorbar / legend sits under the image.
+**RGB** (false-colour composite, below), diff select (`vs pane N`), close.
+The colorbar / legend sits under the image.
 
 **Topbar.** Layout 1-4, **Sync view** (panes in the same CRS share pan/zoom;
 pixel-space files such as raw C2RCC get their own view and an
@@ -80,21 +81,42 @@ diverging palette (red = this pane higher, blue = lower). Both files must be
 in the same CRS. The auto vmax is the 98th percentile of |diff|; type a value
 to fix it.
 
-Keyboard: `1`-`4` layout, `s` sync, `l` link bands, `k` lock stretch, `c`
-catalog, `m` metadata, `F` fit all, `?` help; in a pane: drag to pan, wheel to
-zoom at the cursor, double-click zoom 2x, `+`/`-` zoom, `0` fit, arrows pan.
+**RGB composite.** **RGB** in a pane header (or `r`) composes three bands of
+the pane's file on red, green and blue. A third header row appears with a
+preset select (true colour 665/560/492, false-colour NIR 865/665/560, SWIR
+2202/865/665, red edge 704/665/560; presets resolve by nominal wavelength
+within one spectral family, with 833 standing in for 865 and 740 for 704),
+one band select per channel for any custom combination, **shared** and a
+gamma select. Each channel is stretched p2-p98 on its own by default (so a
+dark-water scene still shows colour); **shared** uses one range (the union)
+for all three, which keeps the bands' relative brightness; gamma > 1
+brightens the dark end. Min/max typed in the stretch row apply to every
+channel; `log` works too. A pixel is drawn only where all three channels are
+valid. The legend shows the three channel bands with their ranges, the
+status bar shows the three values under the cursor, and the metadata drawer
+follows the red channel. With **Link bands** on, the other panes follow
+channel by channel (`Rrs_B04/B03/B02` -> `rrs_B4/B3/B2`) or flash when a
+channel has no match. A composite pane cannot be a diff partner; picking a
+diff or a single band leaves composite mode.
 
-The URL hash holds layout, per-pane file:band and the toggles, so a reload
-(or a shared link) restores the panes.
+Keyboard: `1`-`4` layout, `s` sync, `l` link bands, `k` lock stretch, `r`
+RGB composite, `c` catalog, `m` metadata, `F` fit all, `?` help; in a pane:
+drag to pan, wheel to zoom at the cursor, double-click zoom 2x, `+`/`-` zoom,
+`0` fit, arrows pan.
+
+The URL hash holds layout, per-pane file:band (or `file:rgb(r,g,b)` for a
+composite) and the toggles, so a reload (or a shared link) restores the
+panes. Shared and gamma are pane-local and not kept in the hash.
 
 ## Tests
 
 ```
 C:\Python313\python -m pytest viewer/tests -q
-node --test viewer/tests/test_viewport.mjs
+node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs
 ```
 
-The Python suite (48 tests) runs on synthetic files written by
+(List the `.mjs` files explicitly: node's default test patterns do not match
+`test_*.mjs`.) The Python suite (50 tests) runs on synthetic files written by
 `viewer/tests/conftest.py`; it needs no data drives. Set
 `VIEWER_REAL_NC=<path to a product>` to also run the one real-file check.
 `viewer/tests/conftest.py` carries the same `%TEMP%` workaround as the main
@@ -127,6 +149,25 @@ suite (the default pytest temp root is unreadable on this machine).
 Not yet exercised: the 150-800 MB T17RNL/T17RNM products (first read of a
 band from those takes several seconds; later reads come from the cache),
 the E: roots in the browser, and the `--roots-file` path.
+
+2026-10-19 (later), RGB composite added on `feat/nc-viewer`:
+
+- `pytest viewer/tests`: 50 passed, 1 skipped.
+  `node --test viewer/tests/test_viewport.mjs viewer/tests/test_state.mjs`:
+  15 passed.
+- Browser (desktop app, 800x600) on
+  `production_dual_wqm/S2A_MSI_2025_01_04_16_05_57_T17RNK` DSFOPT +
+  C2RCCOPT with Link bands on: **RGB** switches pane 1 to true colour
+  `Rrs_B04/B03/B02` and pane 2 follows as `rrs_B4/B3/B2` (hash shows both
+  `rgb(...)` forms); NIR preset -> `Rrs_B8A/B04/B03` and `rrs_B8A/B4/B3`;
+  gamma 2 and **shared** re-render (legend shows one range for the three
+  channels); a typed max of 0.08 is sent for all three channels; the status
+  bar lists R/G/B values per pane; the diff select is disabled while a pane
+  is a composite; reload restores both composites from the hash; RGB off
+  returns to `Rrs_B03`. 509x597 composite renders 8-18 ms server time. No
+  console or server errors. (On that scene the C2RCCOPT `rrs_*` bands have a
+  single value over all valid pixels, p2 = p98, so its composite is flat
+  grey by construction, not a viewer fault.)
 
 ## Known limits
 

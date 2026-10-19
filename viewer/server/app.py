@@ -241,6 +241,69 @@ def create_app(config: ViewerConfig) -> FastAPI:
         headers["X-Render-Ms"] = f"{(time.perf_counter() - t0) * 1000:.1f}"
         return Response(content=png, media_type="image/png", headers=headers)
 
+    @app.get("/api/render_rgb")
+    def api_render_rgb(
+        file: str,
+        r: str,
+        g: str,
+        b: str,
+        bbox: str,
+        w: int,
+        h: int,
+        rmin: Optional[float] = None,
+        rmax: Optional[float] = None,
+        gmin: Optional[float] = None,
+        gmax: Optional[float] = None,
+        bmin: Optional[float] = None,
+        bmax: Optional[float] = None,
+        shared: int = 0,
+        scale: str = Query("linear", pattern="^(linear|log)$"),
+        gamma: float = 1.0,
+    ):
+        """False-colour composite of three float bands of one file (R, G, B).
+
+        Each channel is stretched over its own ``[min, max]``; a missing bound
+        comes from that band's p2 / p98. ``shared=1`` applies one range (the
+        union of the three) to every channel so relative brightness between
+        the bands is kept. ``gamma`` > 1 brightens the dark end. The ranges
+        used come back as ``X-Range-R`` / ``-G`` / ``-B`` (``min,max``)."""
+        box = _parse_bbox(bbox)
+        _check_size(w, h)
+        handle = _handle(file)
+        names = (r, g, b)
+        for name in names:
+            info = _band(handle, name)
+            if info.kind not in ("float", "latlon"):
+                raise HTTPException(400, f"rgb channels must be float bands; {name!r} is {info.kind}")
+        arrays = [_read(handle, name) for name in names]
+        t0 = time.perf_counter()
+        bounds = [(rmin, rmax), (gmin, gmax), (bmin, bmax)]
+        ranges = []
+        try:
+            for name, (lo, hi) in zip(names, bounds):
+                if lo is None or hi is None:
+                    st = stats_mod.band_stats(handle, name)
+                    if lo is None:
+                        lo = st.get("p2") if st.get("p2") is not None else 0.0
+                    if hi is None:
+                        hi = st.get("p98") if st.get("p98") is not None else 1.0
+                ranges.append((float(lo), float(hi)))
+            if shared:
+                lo = min(x[0] for x in ranges)
+                hi = max(x[1] for x in ranges)
+                ranges = [(lo, hi)] * 3
+            png = render_mod.render_rgb(
+                arrays, [handle.grid] * 3, box, w, h, ranges=ranges, scale=scale, gamma=gamma,
+            )
+        except HTTPException:
+            raise
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(400, str(exc))
+        headers = {"Cache-Control": "no-store", "X-Render-Ms": f"{(time.perf_counter() - t0) * 1000:.1f}"}
+        for key, (lo, hi) in zip(("X-Range-R", "X-Range-G", "X-Range-B"), ranges):
+            headers[key] = f"{lo!r},{hi!r}"
+        return Response(content=png, media_type="image/png", headers=headers)
+
     # -- frontend ------------------------------------------------------------
     @app.get("/", include_in_schema=False)
     def index():

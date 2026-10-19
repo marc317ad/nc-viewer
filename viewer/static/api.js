@@ -75,7 +75,25 @@ export function renderUrl({ file, band, bbox, w, h, op, file2, band2, vmin, vmax
 }
 
 /**
- * Fetch a render PNG -> {img: ImageBitmap, headers: {vmin, vmax, diffVmax, renderMs}}.
+ * Build a /api/render_rgb URL (false-colour composite of three bands of one
+ * file). Per-channel bounds (rmin..bmax) are omitted when null (server uses
+ * p2..p98); `shared` sends 1; `gamma` is omitted when 1.
+ */
+export function renderRgbUrl({ file, r, g, b, bbox, w, h, rmin, rmax, gmin, gmax, bmin, bmax, shared, scale, gamma }) {
+  return "/api/render_rgb?" + q({
+    file, r, g, b,
+    bbox: bbox.map((v) => String(v)),
+    w: Math.round(w), h: Math.round(h),
+    rmin, rmax, gmin, gmax, bmin, bmax,
+    shared: shared ? 1 : undefined,
+    scale: scale && scale !== "linear" ? scale : undefined,
+    gamma: gamma != null && Number(gamma) !== 1 ? gamma : undefined,
+  });
+}
+
+/**
+ * Fetch a render PNG -> {img: ImageBitmap, headers: {vmin, vmax, diffVmax, renderMs, ranges}}.
+ * `ranges` is {r: [lo, hi], g, b} for a composite (X-Range-* headers), else null.
  * Throws ApiError with the server detail on non-2xx; rethrows AbortError.
  */
 export async function loadImage(url, signal) {
@@ -89,8 +107,15 @@ export async function loadImage(url, signal) {
   if (!resp.ok) throw new ApiError(await detailOf(resp), resp.status, url);
   const blob = await resp.blob();
   const num = (k) => { const v = resp.headers.get(k); return v == null || v === "" ? null : Number(v); };
+  const pair = (k) => {
+    const v = resp.headers.get(k);
+    if (!v) return null;
+    const a = v.split(",").map(Number);
+    return a.length === 2 && a.every(Number.isFinite) ? a : null;
+  };
   const headers = {
     vmin: num("X-Vmin"), vmax: num("X-Vmax"), diffVmax: num("X-Diff-Vmax"), renderMs: num("X-Render-Ms"),
+    ranges: pair("X-Range-R") ? { r: pair("X-Range-R"), g: pair("X-Range-G"), b: pair("X-Range-B") } : null,
   };
   let img;
   try {
