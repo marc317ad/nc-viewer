@@ -13,7 +13,7 @@ from pathlib import Path
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m viewer",
-        description="Lightweight viewer for the pipeline's NetCDF products.",
+        description="Local viewer for NetCDF imagery products: side-by-side panes, bands, flags, metadata.",
     )
     p.add_argument("--roots-file", type=Path, default=None,
                    help="JSON with {roots:[{path,label}], port, ...}; default viewer/roots.json when present")
@@ -41,6 +41,10 @@ def main(argv=None) -> int:
         max_depth=args.max_depth,
         open_browser=False if args.no_browser else None,
     )
+
+    if not config.roots:
+        print("no data roots configured: pass --root DIR or create viewer/roots.json "
+              "(see viewer/roots.example.json); files can still be opened by path.")
 
     if args.scan_only:
         from .server.catalog import Catalog

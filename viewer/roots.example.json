@@ -1,10 +1,9 @@
 {
-  "_comment": "Copy to viewer/roots.json (gitignored) and edit. Paths may use forward slashes.",
+  "_comment": "Copy to viewer/roots.json (ignored by git) and edit. Each root is scanned for *.nc files max_depth levels deep; an entry is a path or {path, label}. Forward slashes work on Windows.",
   "roots": [
-    {"path": "L:/acolite_compressed_2025", "label": "L: optimized products (DSFOPT / C2RCCOPT)"},
-    {"path": "L:/acolite_output/sentinel2", "label": "L: raw branch outputs (L2W / C2RCC / CANON)"},
-    {"path": "E:/acolite_compressed_2025", "label": "E: optimized products"},
-    {"path": "E:/acolite_output/sentinel2", "label": "E: raw branch outputs"}
+    {"path": "D:/data/products", "label": "optimized products (DSFOPT / C2RCCOPT)"},
+    {"path": "D:/data/acolite_output", "label": "raw branch outputs (L2W / C2RCC / CANON)"},
+    "/mnt/data/other_products"
   ],
   "host": "127.0.0.1",
   "port": 8765,

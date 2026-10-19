@@ -1,11 +1,12 @@
 """Viewer configuration: data roots, host/port, cache size.
 
-Resolution order (later wins): built-in defaults -> roots file
-(``viewer/roots.json`` when present, or ``--roots-file``) -> command-line
-``--root`` entries (appended) and ``--port`` / ``--host`` / ``--cache-mb``.
+Resolution order (later wins): built-in defaults (no roots, 127.0.0.1:8765,
+a 2 GB band cache) -> settings file (``viewer/roots.json`` when present, or
+``--roots-file``) -> command-line ``--root`` entries (appended) and
+``--port`` / ``--host`` / ``--cache-mb``.
 
-The settings file is deliberately NOT named ``*config*.json``: the repo's
-``.gitignore`` ignores that pattern everywhere.
+Without a settings file or ``--root`` the catalog is empty; files can still
+be opened by absolute path from the browser.
 """
 
 from __future__ import annotations
@@ -38,12 +39,8 @@ class RootSpec:
         return {"path": self.path, "label": self.label, "exists": self.exists()}
 
 
-DEFAULT_ROOTS: List[RootSpec] = [
-    RootSpec("L:/acolite_compressed_2025", "L: optimized products (DSFOPT / C2RCCOPT)"),
-    RootSpec("L:/acolite_output/sentinel2", "L: raw branch outputs (L2W / C2RCC / CANON)"),
-    RootSpec("E:/acolite_compressed_2025", "E: optimized products"),
-    RootSpec("E:/acolite_output/sentinel2", "E: raw branch outputs"),
-]
+#: No built-in roots: configure them in ``viewer/roots.json`` or with ``--root``.
+DEFAULT_ROOTS: List[RootSpec] = []
 
 
 @dataclass
