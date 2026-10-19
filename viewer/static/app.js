@@ -464,7 +464,11 @@ async function boot() {
 async function restoreFromHash(initial, parsed = parseHash(location.hash)) {
   const ids = Object.keys(parsed.panes).map(Number);
   if (!ids.length) return;
-  if (!initial) applyHashFlags(state, parsed);
+  if (!initial) {
+    // a hash edited in the address bar: apply the flags to the DOM as boot does
+    applyHashFlags(state, parsed);
+    setLayout(state.layout); setSync(state.sync); setLink(state.linkBands); setLock(state.lockStretch);
+  }
   const need = Math.max(state.layout, ...ids);
   if (need !== state.layout) setLayout(need);
   for (const id of ids) {

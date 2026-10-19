@@ -252,6 +252,19 @@ catalog holds its 7 files and nothing else.
   single value over all valid pixels, p2 = p98, so its composite is flat
   grey by construction, not a viewer fault.)
 
+### Merged build
+
+2026-10-19, after merging `claude/brave-mahavira-991b1b` into
+`feat/nc-viewer` (f849b91): `pytest viewer/tests` 51 passed, 1 skipped;
+node 15 passed; all merged files LF-only. In the browser on the restarted
+server: the 2025-01-04 T17RNK pair opens as two composites from the URL
+hash; opening the 2025-01-09 T17RNK DSFOPT from the catalog into pane 1
+keeps the previous image until the new render lands and resets the pane to
+`Rrs_B03`; **Fit** then shows the new footprint. No console or server
+errors. Found and fixed on the way: a hash edited in the address bar
+restored the panes but not the layout and toggle buttons
+(`restoreFromHash` now applies them as boot does).
+
 ## Known limits
 
 - The view position is not stored in the URL hash (layout, files, bands and
