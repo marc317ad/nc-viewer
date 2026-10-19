@@ -37,6 +37,27 @@ PathLike = Union[str, Path]
 #: Global lock around all netCDF/HDF5 I/O (plan section 7).
 NETCDF_LOCK = threading.RLock()
 
+#: HDF5 per-variable chunk cache for every file the viewer opens. netCDF4's
+#: default is 64 MB per variable, and a whole-variable read leaves the
+#: decompressed chunks parked in that cache for as long as the file is open:
+#: measured on the 805 MB T17RNM C2RCCOPT, 16 band reads cost 1004 MB on top
+#: of the viewer's own 1138 MB band cache; at 1 MB they cost 84 MB, at the
+#: same read time (~200 ms per 57 MB band). 4 MB still holds a few chunks for
+#: the single-pixel reads behind ``value_at``.
+HDF5_CHUNK_CACHE_BYTES = 4 * 1024 * 1024
+HDF5_CHUNK_CACHE_NELEMS = 521
+HDF5_CHUNK_CACHE_PREEMPTION = 0.75
+
+
+def _open_dataset(path: PathLike):
+    """``netCDF4.Dataset(path)`` read-only, auto mask + scale on, with the
+    viewer's chunk-cache setting applied first. Call under ``NETCDF_LOCK``."""
+    import netCDF4
+    netCDF4.set_chunk_cache(HDF5_CHUNK_CACHE_BYTES, HDF5_CHUNK_CACHE_NELEMS, HDF5_CHUNK_CACHE_PREEMPTION)
+    ds = netCDF4.Dataset(path, mode="r")
+    ds.set_auto_maskandscale(True)
+    return ds
+
 #: Sentinel-2 nominal band centres (nm) used for ``match_key`` folding.
 S2_NOMINAL_NM: Dict[str, int] = {
     "B1": 443, "B01": 443, "B2": 492, "B02": 492, "B3": 560, "B03": 560,
@@ -533,15 +554,17 @@ def _grid_mapping_crs(var_records: Dict[str, dict], band_attrs: Dict[str, dict],
 
 def _to_float_array(raw: Any, kind: str) -> np.ndarray:
     """Masked/plain array -> float32 (float kinds) or float64 (flags, status,
-    latlon) with NaN where masked."""
+    latlon) with NaN where masked. ``raw`` is consumed: a fresh netCDF4 read
+    that already has the target dtype keeps its buffer instead of being
+    copied a second time (a full-tile L2W band is 331 MB)."""
     target = np.float32 if kind == "float" else np.float64
     if np.ma.isMaskedArray(raw):
-        out = np.asarray(np.ma.getdata(raw)).astype(target, copy=True)
-        mask = np.ma.getmaskarray(raw)
-        if mask.any():
+        out = np.asarray(np.ma.getdata(raw)).astype(target, copy=False)
+        mask = np.ma.getmask(raw)
+        if mask is not np.ma.nomask and np.any(mask):
             out[mask] = np.nan
     else:
-        out = np.asarray(raw).astype(target, copy=True)
+        out = np.asarray(raw).astype(target, copy=False)
     return np.ascontiguousarray(out)
 
 
@@ -607,11 +630,9 @@ class DatasetHandle:
 
     # -- lifecycle -----------------------------------------------------------
     def _open(self) -> None:
-        import netCDF4
         with NETCDF_LOCK:
-            ds = netCDF4.Dataset(self.path, mode="r")
+            ds = _open_dataset(self.path)
             try:
-                ds.set_auto_maskandscale(True)
                 self._global_attrs = {k: ds.getncattr(k) for k in ds.ncattrs()}
                 self._dims = {name: len(dim) for name, dim in ds.dimensions.items()}
                 self._var_records = {name: self._record(var) for name, var in ds.variables.items()}
@@ -732,10 +753,7 @@ class DatasetHandle:
         """The open netCDF4 dataset (reopened after ``close``). Call under
         ``NETCDF_LOCK``."""
         if self._ds is None:
-            import netCDF4
-            ds = netCDF4.Dataset(self.path, mode="r")
-            ds.set_auto_maskandscale(True)
-            self._ds = ds
+            self._ds = _open_dataset(self.path)
         return self._ds
 
     def close(self) -> None:

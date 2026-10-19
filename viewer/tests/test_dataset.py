@@ -221,3 +221,24 @@ def test_real_product_is_projected(real_nc, array_cache):
         assert h.default_band is not None
     finally:
         h.close()
+
+
+def test_open_uses_small_hdf5_chunk_cache(dsfopt_path, array_cache):
+    """Every variable is opened with the viewer's small HDF5 chunk cache, not
+    netCDF4's 64 MB default, so a whole-band read does not leave a second
+    copy of the band inside HDF5 for as long as the file stays open. Checked
+    on the first open and on the reopen after close()."""
+    from viewer.server.dataset import HDF5_CHUNK_CACHE_BYTES, NETCDF_LOCK
+
+    assert HDF5_CHUNK_CACHE_BYTES <= 8 * 1024 * 1024
+    h = DatasetHandle(dsfopt_path, array_cache)
+    try:
+        for _ in range(2):
+            with NETCDF_LOCK:
+                ds = h._dataset()
+                sizes = {name: int(var.get_var_chunk_cache()[0]) for name, var in ds.variables.items() if var.ndim == 2}
+            assert sizes and set(sizes.values()) == {HDF5_CHUNK_CACHE_BYTES}, sizes
+            assert h.read_band(h.default_band).dtype == np.float32
+            h.close()
+    finally:
+        h.close()
